@@ -1,0 +1,10 @@
+# Direct runtime versions validated by this repository on 2026-08-28.
+# scripts/bootstrap.ps1 and scripts/bootstrap.sh pass this file to pip while
+# installing the backend in editable mode. Transitive packages intentionally
+# remain platform-resolved so Windows and macOS can select compatible native
+# wheels. The isolated build backend is pinned separately in pyproject.toml.
+faster-whisper==1.2.1
+huggingface-hub==1.29.0
+sherpa-onnx==1.13.6
+ctranslate2==4.8.1
+sentencepiece==0.2.2

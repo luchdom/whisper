@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    >
+    <title>Meeting Transcriber</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="app-title-block">
+          <h1>Meeting Transcriber</h1>
+          <p><span class="privacy-mark" aria-hidden="true">●</span> Private on this device</p>
+        </div>
+        <div class="header-actions">
+          <button id="open-settings" class="secondary-action header-settings" type="button">Settings</button>
+          <div class="session-readout" aria-live="polite" aria-atomic="true">
+            <span id="session-dot" class="status-dot neutral" aria-hidden="true"></span>
+            <span id="session-status">Ready to start</span>
+            <time id="elapsed-time" datetime="PT0S">00:00:00</time>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="setup-panel" aria-labelledby="sources-heading">
+          <div class="source-area">
+            <div class="section-heading">
+              <div>
+                <h2 id="sources-heading">Audio sources</h2>
+                <p>Select at least one source. No video is recorded.</p>
+              </div>
+            </div>
+            <div class="source-grid">
+              <label class="source-card" for="source-system">
+                <input id="source-system" type="checkbox" checked>
+                <span class="source-copy">
+                  <strong>Meeting audio</strong>
+                  <span id="source-system-status" class="source-status" data-state="idle">
+                    <span class="mini-dot" aria-hidden="true"></span>
+                    Ready to request
+                  </span>
+                </span>
+              </label>
+              <label class="source-card" for="source-microphone">
+                <input id="source-microphone" type="checkbox" checked>
+                <span class="source-copy">
+                  <strong>Your microphone</strong>
+                  <span id="source-microphone-status" class="source-status" data-state="idle">
+                    <span class="mini-dot" aria-hidden="true"></span>
+                    Ready to request
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div class="engine-area" aria-labelledby="engine-heading">
+            <div class="engine-heading-row">
+              <h2 id="engine-heading">Transcription</h2>
+              <span id="engine-status" class="engine-status" data-state="idle">Waiting to start</span>
+            </div>
+            <div class="engine-fields">
+              <label class="compact-field" for="model-select">
+                <span>Model</span>
+                <select id="model-select" aria-describedby="model-helper"></select>
+              </label>
+              <label class="compact-field" for="language-select">
+                <span>Language</span>
+                <select id="language-select" aria-describedby="language-help">
+                  <option value="auto" selected>Auto-detect</option>
+                  <option value="en">English</option>
+                  <option value="pt">Portuguese</option>
+                </select>
+              </label>
+            </div>
+            <p id="model-helper" class="field-help">Loading the verified model catalog…</p>
+            <p id="language-help" class="field-help" hidden>English is fixed for this model.</p>
+            <div id="model-progress" class="model-progress" aria-live="polite" aria-atomic="true" hidden>
+              <span id="model-progress-label">Preparing the selected local model…</span>
+              <progress id="model-progress-bar" max="1" aria-labelledby="model-progress-label"></progress>
+            </div>
+          </div>
+
+          <button
+            id="session-action"
+            class="primary-action"
+            type="button"
+            aria-keyshortcuts="Control+Enter"
+          >Start transcription</button>
+        </section>
+
+        <div class="notice-stack">
+          <div id="app-alert" class="app-alert" role="status" aria-live="polite" hidden></div>
+          <div id="translation-warning" class="app-alert" data-tone="warning" role="status" aria-live="polite" hidden></div>
+        </div>
+
+        <section class="transcript-panel" aria-labelledby="transcript-heading">
+          <header class="transcript-header">
+            <div class="transcript-title-block">
+              <h2 id="transcript-heading">Live transcript</h2>
+              <span id="translation-status" class="translation-status" hidden></span>
+              <p>Draft text appears lighter until confirmed.</p>
+            </div>
+            <div class="transcript-actions" aria-label="Transcript actions">
+              <button id="copy-transcript" class="secondary-action" type="button" disabled>Copy</button>
+              <button id="save-transcript" class="secondary-action" type="button" disabled>Save copy…</button>
+            </div>
+          </header>
+          <div id="transcript-scroll" class="transcript-scroll">
+            <div id="empty-transcript" class="empty-transcript">
+              <strong>Your conversation will appear here.</strong>
+              <span>Start transcription and speak normally in your meeting.</span>
+            </div>
+            <div id="transcript-content" class="transcript-content" aria-live="off" aria-label="Transcript segments"></div>
+            <div id="transcript-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+          </div>
+          <footer id="privacy-note" class="privacy-note">Audio is never saved. Final text stays here until you save it or start another meeting.</footer>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog" aria-labelledby="settings-title" aria-describedby="settings-description">
+      <div class="settings-dialog-content">
+        <header class="settings-dialog-header">
+          <div>
+            <h2 id="settings-title">Settings</h2>
+            <p id="settings-description">Configure the local engine, translation, speaker labels, and transcript saving.</p>
+          </div>
+          <button id="close-settings-top" class="secondary-action dialog-close" type="button" aria-label="Close settings">Close</button>
+        </header>
+
+        <section class="settings-section" aria-labelledby="engine-settings-heading">
+          <div>
+            <h3 id="engine-settings-heading">Local engine</h3>
+            <p>Check the private transcription engine installed on this device.</p>
+          </div>
+          <div id="engine-setup-card" class="engine-setup-card" data-state="checking" tabindex="-1">
+            <div class="engine-setup-copy" aria-live="polite" aria-atomic="true">
+              <strong id="engine-setup-title">Checking local engine…</strong>
+              <p id="engine-setup-message">This check only inspects this device. It will not install or download anything.</p>
+            </div>
+            <div class="setup-actions">
+              <button id="open-python-download" class="secondary-action" type="button" hidden>Open Python download page</button>
+              <button id="copy-setup-command" class="secondary-action" type="button" hidden>Copy setup command</button>
+              <button id="check-engine-setup" class="secondary-action" type="button" disabled>Check again</button>
+            </div>
+            <p id="engine-setup-feedback" class="setup-action-feedback" aria-live="polite" aria-atomic="true" hidden></p>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="translation-settings-heading">
+          <div>
+            <h3 id="translation-settings-heading">Translation</h3>
+            <p>Optionally translate finalized English into Brazilian Portuguese on this device.</p>
+          </div>
+          <label class="toggle-row" for="translation-toggle">
+            <span>
+              <strong>Translate English to Brazilian Portuguese</strong>
+              <small>Keeps the original English. Drafts and non-English segments stay unchanged.</small>
+            </span>
+            <input id="translation-toggle" type="checkbox" aria-describedby="translation-availability translation-disclosure">
+          </label>
+          <p id="translation-availability" class="translation-availability" hidden>Translation is unavailable in this build.</p>
+          <p id="translation-disclosure" class="translation-disclosure" hidden></p>
+        </section>
+
+        <section class="settings-section" aria-labelledby="speaker-settings-heading">
+          <div>
+            <h3 id="speaker-settings-heading">Speaker labels</h3>
+            <p>Detect anonymous speakers locally for this meeting. This is not voice identification.</p>
+          </div>
+          <label class="toggle-row" for="diarization-toggle">
+            <span>
+              <strong>Detect anonymous speakers</strong>
+              <small>Transcription continues with audio-source labels if detection is unavailable.</small>
+            </span>
+            <input id="diarization-toggle" type="checkbox" checked>
+          </label>
+        </section>
+
+        <section class="settings-section" aria-labelledby="saving-settings-heading">
+          <div>
+            <h3 id="saving-settings-heading">Transcript saving</h3>
+            <p>Choose where completed transcripts are saved.</p>
+          </div>
+          <div class="folder-setting">
+            <span class="field-label">Default transcript folder</span>
+            <span id="transcript-folder" class="folder-path" title="Not set">Not set — choose a location when you save.</span>
+            <div class="folder-actions">
+              <button id="choose-transcript-folder" class="secondary-action" type="button">Choose folder…</button>
+              <button id="clear-transcript-folder" class="secondary-action" type="button" hidden>Clear</button>
+            </div>
+          </div>
+          <label class="toggle-row" for="autosave-toggle">
+            <span>
+              <strong>Automatically save final transcripts</strong>
+              <small>Final text is saved after a successful stop. Draft text and audio are never saved.</small>
+            </span>
+            <input id="autosave-toggle" type="checkbox" disabled>
+          </label>
+          <p id="settings-lock-note" class="settings-lock-note" hidden>Stop the meeting to change settings.</p>
+        </section>
+
+        <footer class="settings-dialog-footer">
+          <button id="close-settings" class="primary-dialog-action" type="button">Done</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "default_asr_model": "small",
+  "asr_models": [
+    {
+      "id": "tiny",
+      "label": "Tiny — Multilingual",
+      "tier": "very_light",
+      "helper": "Very light · fastest, lowest accuracy",
+      "language_mode": "multilingual",
+      "repository": "Systran/faster-whisper-tiny",
+      "revision": "d90ca5fe260221311c53c58e660288d3deb8d356",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2249, "sha256": "a73a28cdfe1c43ccc7202fa333d1f89c202477271407ae9a7f19afa52039cac8" },
+        { "path": "model.bin", "size": 75538270, "sha256": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1" },
+        { "path": "tokenizer.json", "size": 2203239, "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab" },
+        { "path": "vocabulary.txt", "size": 459861, "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913" }
+      ]
+    },
+    {
+      "id": "tiny.en",
+      "label": "Tiny — English only",
+      "tier": "very_light",
+      "helper": "Very light · English only",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-whisper-tiny.en",
+      "revision": "0d3d19a32d3338f10357c0889762bd8d64bbdeba",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2317, "sha256": "14b1b421a90349bc551b881461426b561a874049cb9e4c4864f2ca384f6a7cc5" },
+        { "path": "model.bin", "size": 75537502, "sha256": "1a5afae06a4db91c975c9a9d78be5cc110ee4ea022ad57d55492e4550e936b2a" },
+        { "path": "tokenizer.json", "size": 2128466, "sha256": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df" },
+        { "path": "vocabulary.txt", "size": 422309, "sha256": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf" }
+      ]
+    },
+    {
+      "id": "base",
+      "label": "Base — Multilingual",
+      "tier": "light",
+      "helper": "Light · lower-resource profile",
+      "language_mode": "multilingual",
+      "repository": "Systran/faster-whisper-base",
+      "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2309, "sha256": "56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a" },
+        { "path": "model.bin", "size": 145217532, "sha256": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9" },
+        { "path": "tokenizer.json", "size": 2203239, "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab" },
+        { "path": "vocabulary.txt", "size": 459861, "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913" }
+      ]
+    },
+    {
+      "id": "base.en",
+      "label": "Base — English only",
+      "tier": "light",
+      "helper": "Light · lower-resource English",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-whisper-base.en",
+      "revision": "3d3d5dee26484f91867d81cb899cfcf72b96be6c",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2227, "sha256": "f3bc3821e9fc76a27bae538e11ae5b677dcdd352b4600429ce7951d398569aeb" },
+        { "path": "model.bin", "size": 145216508, "sha256": "2a166925539a16005f14ff328359f9b9adb9dc4fb631bb3b227526862e93e2ef" },
+        { "path": "tokenizer.json", "size": 2128466, "sha256": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df" },
+        { "path": "vocabulary.txt", "size": 422309, "sha256": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf" }
+      ]
+    },
+    {
+      "id": "small",
+      "label": "Small — Multilingual",
+      "tier": "balanced",
+      "helper": "Balanced · current default",
+      "language_mode": "multilingual",
+      "repository": "Systran/faster-whisper-small",
+      "revision": "536b0662742c02347bc0e980a01041f333bce120",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2370, "sha256": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828" },
+        { "path": "model.bin", "size": 483546902, "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671" },
+        { "path": "tokenizer.json", "size": 2203239, "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab" },
+        { "path": "vocabulary.txt", "size": 459861, "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913" }
+      ]
+    },
+    {
+      "id": "small.en",
+      "label": "Small — English only",
+      "tier": "balanced",
+      "helper": "Balanced · recommended for English",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-whisper-small.en",
+      "revision": "d1d751a5f8271d482d14ca55d9e2deeebbae577f",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2657, "sha256": "666a9605530ac1f61fa8177f3702b4dacec9966749e42610839fcc32661d5fae" },
+        { "path": "model.bin", "size": 483545366, "sha256": "62b2a45b05ee59acb4a5341b33ee35e041395d378d418a18acfe4c9e768ee37a" },
+        { "path": "tokenizer.json", "size": 2128466, "sha256": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df" },
+        { "path": "vocabulary.txt", "size": 422309, "sha256": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf" }
+      ]
+    },
+    {
+      "id": "distil-small.en",
+      "label": "Distil Small — English only",
+      "tier": "balanced",
+      "helper": "Balanced · optimized English",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-distil-whisper-small.en",
+      "revision": "ef77d90526ccd62cde3808ee70626a01e5cf83e4",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2812, "sha256": "b571ae8022a34c1df50876a65b5f813a5c22e5ee3b87bc0e4db5662dfc9c2c3d" },
+        { "path": "model.bin", "size": 332308257, "sha256": "1187de3982cdcf962a2fb8f797e429fb4651b875b18fe9ce50b58b52fc9072b7" },
+        { "path": "preprocessor_config.json", "size": 339, "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d" },
+        { "path": "tokenizer.json", "size": 2405466, "sha256": "c9c77688528c0509abbd41873edab16384b8f041531b1d3092ab4d1d83a02a50" },
+        { "path": "vocabulary.json", "size": 825480, "sha256": "4dadfee7c4a871665f65c06037f5f5ec893fb2d7f5eb4cf11063618e31dbe11a" }
+      ]
+    },
+    {
+      "id": "medium",
+      "label": "Medium — Multilingual",
+      "tier": "high",
+      "helper": "High resource use · higher accuracy",
+      "language_mode": "multilingual",
+      "repository": "Systran/faster-whisper-medium",
+      "revision": "08e178d48790749d25932bbc082711ddcfdfbc4f",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2257, "sha256": "3622a2ddc41ec0e0fd4e68c13c6830f03b90c38d89aaad184de02c8c642cf807" },
+        { "path": "model.bin", "size": 1527906378, "sha256": "9b45e1009dcc4ab601eff815b61d80e60ce3fd8c74c1a14f4a282258286b51ae" },
+        { "path": "tokenizer.json", "size": 2203239, "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab" },
+        { "path": "vocabulary.txt", "size": 459861, "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913" }
+      ]
+    },
+    {
+      "id": "medium.en",
+      "label": "Medium — English only",
+      "tier": "high",
+      "helper": "High resource use · English only",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-whisper-medium.en",
+      "revision": "a29b04bd15381511a9af671baec01072039215e3",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2643, "sha256": "4a1848ebabe7938d9797c15a2e8e4ce1d36e6fd4a43d096ae5955257c67c7962" },
+        { "path": "model.bin", "size": 1527904330, "sha256": "11b220779aea4c6f3ce9d2549c8a95ea869ed84066864b999531ef53e594fe5b" },
+        { "path": "tokenizer.json", "size": 2128466, "sha256": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df" },
+        { "path": "vocabulary.txt", "size": 422309, "sha256": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf" }
+      ]
+    },
+    {
+      "id": "distil-medium.en",
+      "label": "Distil Medium — English only",
+      "tier": "high",
+      "helper": "High · optimized English",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-distil-whisper-medium.en",
+      "revision": "80ddfce281f77766d8943d63109199fc8145dfa5",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2574, "sha256": "8fbd09f4b35e38db19b1cf43ed4d812b8da7c6b791aafbc93b37dc82f198ab70" },
+        { "path": "model.bin", "size": 788826555, "sha256": "d4cb75d823dcd2647191064da76f026774c06c036908f38456165368d0e2d66a" },
+        { "path": "preprocessor_config.json", "size": 339, "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d" },
+        { "path": "tokenizer.json", "size": 2405678, "sha256": "79eb6cded9fd5d31cc83def0bc5fc9b3afa4973df1da4c7fbc89c44adfa8fe32" },
+        { "path": "vocabulary.json", "size": 825480, "sha256": "4dadfee7c4a871665f65c06037f5f5ec893fb2d7f5eb4cf11063618e31dbe11a" }
+      ]
+    },
+    {
+      "id": "distil-large-v3",
+      "label": "Distil Large v3 — English only",
+      "tier": "high",
+      "helper": "High · optimized English",
+      "language_mode": "english_only",
+      "repository": "Systran/faster-distil-whisper-large-v3",
+      "revision": "c3058b475261292e64a0412df1d2681c06260fab",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2690, "sha256": "90c55f775cc4e0bb17293d0bf12f96557a486f20dea886fabd8e6075a3588b21" },
+        { "path": "model.bin", "size": 1512927867, "sha256": "b79368e19b6623813609431a6e5ee309a71506701ebc49fd7820e692dec7c5f5" },
+        { "path": "preprocessor_config.json", "size": 340, "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711" },
+        { "path": "tokenizer.json", "size": 2480617, "sha256": "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca" },
+        { "path": "vocabulary.json", "size": 1068114, "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1" }
+      ]
+    },
+    {
+      "id": "distil-large-v3.5",
+      "label": "Distil Large v3.5 — English only",
+      "tier": "high",
+      "helper": "High · optimized English",
+      "language_mode": "english_only",
+      "repository": "distil-whisper/distil-large-v3.5-ct2",
+      "revision": "9793ccc07920e0f830e1dba0343efcdf0ef8c903",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2690, "sha256": "90c55f775cc4e0bb17293d0bf12f96557a486f20dea886fabd8e6075a3588b21" },
+        { "path": "model.bin", "size": 1512927867, "sha256": "c58b88b8585ffcd2135fddaaf421ce72cb223b32edea70d156aed1dea319a119" },
+        { "path": "preprocessor_config.json", "size": 340, "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711" },
+        { "path": "tokenizer.json", "size": 2480645, "sha256": "b3c8202bbf06d8ee4232c5984baa563784ac4737e2e7fdc42fa180200d3cfcdb" },
+        { "path": "vocabulary.json", "size": 1068114, "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1" }
+      ]
+    },
+    {
+      "id": "turbo",
+      "label": "Large v3 Turbo — Multilingual",
+      "tier": "high",
+      "helper": "High · large-model quality; high system load",
+      "language_mode": "multilingual",
+      "repository": "dropbox-dash/faster-whisper-large-v3-turbo",
+      "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2263, "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e" },
+        { "path": "model.bin", "size": 1617884929, "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da" },
+        { "path": "preprocessor_config.json", "size": 340, "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711" },
+        { "path": "tokenizer.json", "size": 2710337, "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd" },
+        { "path": "vocabulary.json", "size": 1068114, "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1" }
+      ]
+    },
+    {
+      "id": "large-v3",
+      "label": "Large v3 — Multilingual",
+      "tier": "very_high",
+      "helper": "Very high · maximum quality; near-live CPU performance is not guaranteed",
+      "language_mode": "multilingual",
+      "repository": "Systran/faster-whisper-large-v3",
+      "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+      "license": "MIT",
+      "files": [
+        { "path": "config.json", "size": 2394, "sha256": "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9" },
+        { "path": "model.bin", "size": 3087284237, "sha256": "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1" },
+        { "path": "preprocessor_config.json", "size": 340, "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711" },
+        { "path": "tokenizer.json", "size": 2480617, "sha256": "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca" },
+        { "path": "vocabulary.json", "size": 1068114, "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1" }
+      ]
+    }
+  ],
+  "speaker_models": [
+    {
+      "id": "wespeaker-en-voxceleb-campp",
+      "repository": "k2-fsa/sherpa-onnx",
+      "revision": "0e23f82691d3ea3a2fca7e698684e2c0c89eb95c",
+      "release_tag": "speaker-recongition-models",
+      "license": "CC-BY-4.0",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx",
+      "file": {
+        "path": "wespeaker_en_voxceleb_CAM++.onnx",
+        "size": 29292684,
+        "sha256": "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef"
+      }
+    }
+  ],
+  "translation_models": [
+    {
+      "id": "opus-mt-en-pt-br-ct2-int8",
+      "mode": "en_to_pt_br",
+      "label": "English to Brazilian Portuguese",
+      "platforms": ["win32-x64"],
+      "upstream": {
+        "repository": "Helsinki-NLP/opus-mt-tc-big-en-pt",
+        "revision": "9f2863d807ecf91a374bdbecb8d01e402e90622e",
+        "license": "CC-BY-4.0"
+      },
+      "source": {
+        "url": "https://object.pouta.csc.fi/Tatoeba-MT-models/eng-por/opusTCv20210807+bt_transformer-big_2022-03-13.zip",
+        "size": 863398393,
+        "sha256": "62aeb8916c2463351a2dd8d1ea51fcf3929fb3daab7261dcae8d5599e886c008",
+        "members": [
+          { "path": "README.md", "size": 1333, "sha256": "f8c43b42ee9890e187e94115293d1f7c68abc2e7eb12f9d0f128e4d4e6f636b3", "extract": true },
+          { "path": "LICENSE", "size": 18652, "sha256": "945fbcb37deca05bccd7c3ca0e261679f1f5373515504fdbad68f6f3cf6f49b9", "extract": true },
+          { "path": "opusTCv20210807+bt.spm32k-spm32k.transformer-big.model1.npz.best-perplexity.npz", "size": 930060490, "sha256": "083f8ddbb2894aeab76c60d37d79414977b214bb5a06e6c79e3ae16eba9fae8e", "extract": true },
+          { "path": "opusTCv20210807+bt.spm32k-spm32k.transformer-big.model1.npz.best-perplexity.yml", "size": 1131, "sha256": "fe9e636bdca29e1c4625c3aa95f26c9cb9730e1d64aed40c7734b6d999e8358f", "extract": false },
+          { "path": "opusTCv20210807+bt.spm32k-spm32k.vocab.yml", "size": 944695, "sha256": "1b9110721b231ca2ffd86450224d56e524bd7a9c78ae9b1b8f7f18a7cb86d9cf", "extract": true },
+          { "path": "opusTCv20210807+bt.spm32k-spm32k.transformer-big.valid1.log", "size": 2226, "sha256": "8250e4ce7e94c36c7c9971566930e3cdec83c1a2f981947ad9ecc619f85a1c16", "extract": false },
+          { "path": "opusTCv20210807+bt.spm32k-spm32k.transformer-big.train1.log", "size": 62061, "sha256": "16dafa5f0607184023f5240cb8824ae461f8c8c5ffb27fdee3100cdbe64ffdae", "extract": false },
+          { "path": "source.spm", "size": 802741, "sha256": "7a7fcf812cf03a5785daa35d4932bbbe69e7e605c0fe56fce5a3f731d6c355aa", "extract": true },
+          { "path": "target.spm", "size": 824855, "sha256": "b3cf20ccd4e48a89882cfdba157c05fa1cd71a6b69517dfc80e3a34d387ea91f", "extract": true },
+          { "path": "decoder.yml", "size": 305, "sha256": "a01479b996ec65f9113730c7e717242c58dd1f31039d323ed7cbd595d54e6052", "extract": true },
+          { "path": "preprocess.sh", "size": 2125, "sha256": "63bb6f5f1cce687ddc8c0d22cf64342c2b68bec97420fa6e8de95e87ec10e1e4", "extract": false },
+          { "path": "postprocess.sh", "size": 80, "sha256": "039cec87f6d037fa216e918f3b0a7d4fd46517e54f4d422e73e0b4d6fc27ac0d", "extract": false },
+          { "path": "opusTCv20210807+bt.transformer-big.mk", "size": 616, "sha256": "b2873112beedcf922356bfce816c71ab40990d00e2633daddd403ac5ace86360", "extract": false }
+        ]
+      },
+      "conversion": {
+        "tool": "ctranslate2",
+        "version": "4.8.1",
+        "quantization": "int8",
+        "target_token": ">>pob<<",
+        "files": [
+          { "path": "config.json", "size": 231, "sha256": "95dabd564e6abdb470e95f9106766647d8dc59e1bc2a1517d292c0cee5ca5812" },
+          { "path": "LICENSE", "size": 18652, "sha256": "945fbcb37deca05bccd7c3ca0e261679f1f5373515504fdbad68f6f3cf6f49b9" },
+          { "path": "model.bin", "size": 242419589, "sha256": "9c9700a23edecabbaccddbf22179d80ecc062c0c085441df74e328693172c017" },
+          { "path": "README.md", "size": 1333, "sha256": "f8c43b42ee9890e187e94115293d1f7c68abc2e7eb12f9d0f128e4d4e6f636b3" },
+          { "path": "shared_vocabulary.json", "size": 1063207, "sha256": "c27223d6d29d670bfab4f6b7e073694ba1479ca9a3a9e723a5d0996989a84ff0" },
+          { "path": "source.spm", "size": 802741, "sha256": "7a7fcf812cf03a5785daa35d4932bbbe69e7e605c0fe56fce5a3f731d6c355aa" },
+          { "path": "target.spm", "size": 824855, "sha256": "b3cf20ccd4e48a89882cfdba157c05fa1cd71a6b69517dfc80e3a34d387ea91f" }
+        ]
+      }
+    }
+  ]
+}

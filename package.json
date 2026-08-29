@@ -1,0 +1,74 @@
+{
+  "name": "meeting-transcriber-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first real-time meeting transcription desktop client",
+  "author": "Luchdom",
+  "type": "module",
+  "main": "desktop/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test desktop/test/*.test.js",
+    "check": "node --check desktop/main/index.js && node --check desktop/main/backend-controller.js && node --check desktop/main/backend-setup.js && node --check desktop/main/model-catalog.js && node --check desktop/main/protocol.js && node --check desktop/main/desktop-policy.js && node --check desktop/main/settings-store.js && node --check desktop/main/transcript-file-service.js && node --check desktop/renderer/app.js && node --check desktop/renderer/capture-controller.js && node --check desktop/preload/index.cjs",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.luchdom.meetingtranscriber",
+    "productName": "Meeting Transcriber",
+    "asar": true,
+    "files": [
+      "desktop/main/**/*",
+      "desktop/preload/**/*",
+      "desktop/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "src/**/*",
+          "pyproject.toml",
+          "constraints.txt",
+          "README.md",
+          "!src/**/__pycache__/**",
+          "!src/**/*.pyc"
+        ]
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "desktop/build/entitlements.mac.plist",
+      "entitlementsInherit": "desktop/build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Meeting Transcriber uses the microphone only during a transcription you start.",
+        "NSAudioCaptureUsageDescription": "Meeting Transcriber captures meeting audio only during a transcription you start."
+      },
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

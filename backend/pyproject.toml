@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meeting-transcriber-sidecar"
+version = "0.1.0"
+description = "Local real-time meeting transcription sidecar"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "ctranslate2==4.8.1",
+  "faster-whisper>=1.1.0,<2",
+  "huggingface-hub>=1.2.1,<2",
+  "sentencepiece==0.2.2",
+  "sherpa-onnx>=1.12.0,<2",
+]
+
+[project.scripts]
+meeting-transcriber = "meeting_transcriber.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meeting_transcriber"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/meeting_transcriber/model_manifest.json" = "meeting_transcriber/model_manifest.json"
