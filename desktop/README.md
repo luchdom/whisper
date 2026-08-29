@@ -2,7 +2,7 @@
 
 This Electron client captures meeting audio and/or the microphone only after the user presses **Start transcription**, streams separate 16 kHz PCM tracks to the Python sidecar, and shows provisional and finalized transcript segments as they arrive.
 
-Capture is intentionally overt. There is no tray mode, hidden recording, meeting copilot, automatic person naming, or audio archive.
+Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. There is no hidden recording, meeting copilot, automatic person naming, or audio archive.
 
 ## Requirements
 
@@ -30,6 +30,20 @@ The desktop defaults to `small` on CPU with INT8 compute. Model and language con
 | Medium — English only | `medium.en` | Heavier English quality profile |
 
 Selecting an English-only model forces the language setting to English. For multilingual models, choose Auto-detect, English, or Portuguese. Settings are locked while a meeting is active; changes apply to the next start.
+
+## Window, tray, and startup behavior
+
+Meeting Transcriber creates one native notification-area icon on Windows and one menu-bar icon on macOS. The icon and its text distinguish **Ready to start**, **Preparing local model — not recording**, **Recording** with elapsed time, **Needs attention**, and **Stopped — recording stopped**. During capture, **Stop transcription** remains in the native menu until the renderer confirms that capture has stopped.
+
+**Start transcription…** in the native menu only shows the window and focuses its visible Start control; it never begins capture. Tray activation shows the window. **Quit Meeting Transcriber** always runs the same bounded capture, finalization, sidecar-shutdown, and window-release lifecycle as a normal quit.
+
+Open **Settings > App behavior** to change the defaults:
+
+- Closing quits the app by default. Opt in to keeping it in the Windows notification area or macOS menu bar.
+- Minimizing uses normal operating-system behavior by default. Minimize-to-tray is separate and opt in.
+- Launch at sign-in is off by default and is available only in an installed Windows or macOS build. It uses the operating system's login-item API, opens the first window hidden, and never starts transcription.
+
+Only one app instance runs. A second launch shows and focuses the existing window. The explicit `--hidden` argument hides the first window for startup integration without changing capture state.
 
 ## Source setup
 
@@ -136,4 +150,4 @@ pnpm run check
 pnpm run pack
 ```
 
-The unit suite covers streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, main-owned transcript files, platform gating, backend launch selection, and session state transitions.
+The unit suite covers streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, and session state transitions. Windows source runtime behavior can be exercised locally; macOS menu-bar and login-item behavior remains unverified until run on actual macOS hardware.

@@ -134,7 +134,7 @@
         <header class="settings-dialog-header">
           <div>
             <h2 id="settings-title">Settings</h2>
-            <p id="settings-description">Configure the local engine, translation, speaker labels, and transcript saving.</p>
+            <p id="settings-description">Configure the local engine, app behavior, translation, speaker labels, and transcript saving.</p>
           </div>
           <button id="close-settings-top" class="secondary-action dialog-close" type="button" aria-label="Close settings">Close</button>
         </header>
@@ -156,6 +156,46 @@
             </div>
             <p id="engine-setup-feedback" class="setup-action-feedback" aria-live="polite" aria-atomic="true" hidden></p>
           </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="app-behavior-settings-heading">
+          <div>
+            <h3 id="app-behavior-settings-heading">App behavior</h3>
+            <p>Choose how the window and sign-in launch behave. These options never start audio capture.</p>
+          </div>
+          <fieldset class="choice-group">
+            <legend>When I close the window</legend>
+            <label class="choice-row" for="close-behavior-quit">
+              <input id="close-behavior-quit" name="close-behavior" type="radio" value="quit" checked>
+              <span>
+                <strong>Quit app</strong>
+                <small>Stops any active transcription safely, then closes Meeting Transcriber.</small>
+              </span>
+            </label>
+            <label class="choice-row" for="close-behavior-tray">
+              <input id="close-behavior-tray" name="close-behavior" type="radio" value="tray">
+              <span>
+                <strong>Keep running in the <span data-tray-location>notification area</span></strong>
+                <small>Closing hides the window. Recording status, elapsed time, and Stop remain available.</small>
+              </span>
+            </label>
+          </fieldset>
+          <label class="toggle-row" for="minimize-to-tray">
+            <span>
+              <strong>Hide in the <span data-tray-location>notification area</span> when minimized</strong>
+              <small>Leave off to keep normal window minimization.</small>
+            </span>
+            <input id="minimize-to-tray" type="checkbox">
+          </label>
+          <label class="toggle-row" for="launch-at-startup">
+            <span>
+              <strong>Launch Meeting Transcriber when I sign in</strong>
+              <small>Starts hidden in the <span data-tray-location>notification area</span>. Transcription never starts automatically.</small>
+            </span>
+            <input id="launch-at-startup" type="checkbox">
+          </label>
+          <p id="startup-availability" class="settings-availability" hidden>Launch at sign-in is available in the installed Windows or macOS app.</p>
+          <p id="app-behavior-lock-note" class="settings-lock-note" hidden>Stop the meeting to change app behavior.</p>
         </section>
 
         <section class="settings-section" aria-labelledby="translation-settings-heading">

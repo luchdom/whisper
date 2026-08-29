@@ -41,6 +41,15 @@ export async function finalizeCloseLifecycle({
   return { forced: true };
 }
 
+export function getWindowCloseAction({ closeBehavior, quitRequested = false } = {}) {
+  if (quitRequested) return "quit";
+  return closeBehavior === "tray" ? "hide" : "quit";
+}
+
+export function getWindowMinimizeAction({ minimizeToTray } = {}) {
+  return minimizeToTray === true ? "hide" : "minimize";
+}
+
 export function createCloseCoordinator(runClose) {
   let activeClose = null;
   let quitRequested = false;

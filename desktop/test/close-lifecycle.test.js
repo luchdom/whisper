@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCloseCoordinator, createCloseReadyGate, finalizeCloseLifecycle } from "../main/close-lifecycle.js";
+import {
+  createCloseCoordinator,
+  createCloseReadyGate,
+  finalizeCloseLifecycle,
+  getWindowCloseAction,
+  getWindowMinimizeAction
+} from "../main/close-lifecycle.js";
+
+test("window close and minimize policies are explicit and default to normal app behavior", () => {
+  assert.equal(getWindowCloseAction({ closeBehavior: "quit" }), "quit");
+  assert.equal(getWindowCloseAction({ closeBehavior: "tray" }), "hide");
+  assert.equal(getWindowCloseAction({ closeBehavior: "tray", quitRequested: true }), "quit");
+  assert.equal(getWindowCloseAction(), "quit");
+  assert.equal(getWindowMinimizeAction({ minimizeToTray: true }), "hide");
+  assert.equal(getWindowMinimizeAction({ minimizeToTray: false }), "minimize");
+  assert.equal(getWindowMinimizeAction(), "minimize");
+});
 
 test("shutdown rejection releases the window and force-exits exactly once", async () => {
   const calls = [];

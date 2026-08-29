@@ -10,7 +10,7 @@ test("settings leads with a polite local-engine doctor and fixed remediation act
   const speakerLabels = html.indexOf('id="speaker-settings-heading">Speaker labels');
   const doctor = html.slice(html.indexOf('id="engine-setup-card"'), speakerLabels);
 
-  assert.match(html, /Configure the local engine, translation, speaker labels, and transcript saving\./);
+  assert.match(html, /Configure the local engine, app behavior, translation, speaker labels, and transcript saving\./);
   assert.equal(localEngine > 0 && localEngine < speakerLabels, true);
   assert.match(doctor, /aria-live="polite"/);
   assert.doesNotMatch(doctor, /role="alert"/);

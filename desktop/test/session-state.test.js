@@ -1,6 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InvalidSessionTransition, SessionState } from "../renderer/lib/session-state.js";
+import {
+  deriveTrayState,
+  InvalidSessionTransition,
+  SessionState
+} from "../renderer/lib/session-state.js";
+
+test("tray state gives live capture precedence and reports effective setup failures", () => {
+  const ready = {
+    phase: "idle",
+    captureActive: false,
+    settingsReady: true,
+    engineReady: true,
+    catalogReady: true
+  };
+
+  assert.equal(deriveTrayState(ready), "idle");
+  assert.equal(deriveTrayState({ ...ready, settingsReady: false }), "preparing");
+  assert.equal(deriveTrayState({ ...ready, engineReady: false }), "error");
+  assert.equal(deriveTrayState({ ...ready, catalogReady: false }), "error");
+  assert.equal(deriveTrayState({ ...ready, phase: "starting" }), "preparing");
+  assert.equal(deriveTrayState({ ...ready, phase: "starting", captureActive: true }), "transcribing");
+  assert.equal(deriveTrayState({ ...ready, phase: "recording", captureActive: true }), "transcribing");
+  assert.equal(deriveTrayState({ ...ready, phase: "recording" }), "error");
+  assert.equal(deriveTrayState({ ...ready, phase: "stopping", captureActive: true }), "transcribing");
+  assert.equal(deriveTrayState({ ...ready, phase: "stopping" }), "stopped");
+});
 
 test("the normal state path is explicit and repeatable", () => {
   const state = new SessionState();
@@ -11,7 +36,7 @@ test("the normal state path is explicit and repeatable", () => {
   assert.equal(state.beginStop(), true);
   assert.equal(state.phase, "stopping");
   state.finishStop();
-  assert.equal(state.phase, "idle");
+  assert.equal(state.phase, "stopped");
   assert.equal(state.active, false);
 });
 

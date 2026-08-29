@@ -33,7 +33,9 @@ test("settings sanitization uses the runtime catalog and preserves multilingual 
     diarization: false,
     translation: "en_to_pt_br",
     transcriptDirectory: null,
-    autoSave: false
+    autoSave: false,
+    closeBehavior: "quit",
+    minimizeToTray: false
   });
   assert.deepEqual(sanitizeSettings({
     model: "removed-model",
@@ -82,6 +84,8 @@ test("settings save uses the user-data directory, strips unknown values, and lea
     translation: "en_to_pt_br",
     transcriptDirectory,
     autoSave: true,
+    closeBehavior: "tray",
+    minimizeToTray: true,
     secret: "not persisted"
   });
 
@@ -91,7 +95,9 @@ test("settings save uses the user-data directory, strips unknown values, and lea
     diarization: false,
     translation: "en_to_pt_br",
     transcriptDirectory,
-    autoSave: true
+    autoSave: true,
+    closeBehavior: "tray",
+    minimizeToTray: true
   });
   assert.deepEqual(await store.load(), saved);
   assert.deepEqual(

@@ -41,7 +41,7 @@ export class SessionState {
     if (this.phase !== "stopping" && this.phase !== "error") {
       throw new InvalidSessionTransition(`Cannot finish stopping from ${this.phase}.`);
     }
-    this.phase = "idle";
+    this.phase = "stopped";
     this.error = null;
   }
 
@@ -69,4 +69,24 @@ export class InvalidSessionTransition extends Error {
     super(message);
     this.name = "InvalidSessionTransition";
   }
+}
+
+export function deriveTrayState({
+  phase,
+  captureActive,
+  settingsReady,
+  engineReady,
+  catalogReady
+}) {
+  // A live Chromium capture always takes precedence over lifecycle and setup
+  // labels. One acquired source in a multi-source start is already recording.
+  if (captureActive === true) return "transcribing";
+  if (phase === "starting") return "preparing";
+  if (phase === "recording") return "error";
+  if (phase === "stopping") return "stopped";
+  if (phase === "error") return "error";
+  if (phase === "stopped") return "stopped";
+  if (settingsReady !== true) return "preparing";
+  if (catalogReady !== true || engineReady !== true) return "error";
+  return "idle";
 }

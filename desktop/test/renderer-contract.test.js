@@ -40,6 +40,11 @@ test("the rendered product is English and exposes the functional model, language
   assert.match(html, /id="model-select" aria-describedby="model-helper"><\/select>/);
   assert.match(html, /id="choose-transcript-folder"/);
   assert.match(html, /id="autosave-toggle"/);
+  assert.match(html, /id="close-behavior-quit"[^>]*value="quit"[^>]*checked/);
+  assert.match(html, /id="close-behavior-tray"[^>]*value="tray"/);
+  assert.match(html, /id="minimize-to-tray"/);
+  assert.match(html, /id="launch-at-startup"/);
+  assert.match(html, /These options never start audio capture\./);
   assert.match(html, /id="model-progress"[^>]*aria-live="polite"[^>]*hidden/);
   assert.match(html, /<progress id="model-progress-bar" max="1" aria-labelledby="model-progress-label"><\/progress>/);
   assert.deepEqual(
@@ -91,11 +96,12 @@ test("the preload exposes narrow transcript and settings operations without a ge
 
   for (const method of [
     "cancelStart", "saveCopy", "autoSave", "refreshAutoSave", "getSettings", "updateSettings",
-    "chooseTranscriptFolder", "clearTranscriptFolder"
+    "chooseTranscriptFolder", "clearTranscriptFolder", "reportTrayState", "onTrayAction"
   ]) {
     assert.match(preload, new RegExp(`\\b${method}:`));
   }
   assert.doesNotMatch(preload, /writeFile|readFile|filePath\s*=>|saveToPath|chooseFile/);
+  assert.match(preload, /const TRAY_ACTIONS = new Set\(\["focus-start", "stop"\]\)/);
 });
 
 test("selected settings drive start, successful stop precedes autosave, and failed starts restore transcript aliases", async () => {
@@ -133,6 +139,12 @@ test("selected settings drive start, successful stop precedes autosave, and fail
   assert.match(app, /async function stopForClose\(\)[^]*?await autoSaveRefreshQueue\.whenIdle\(\);\s*await settingsOperationPromise;/);
   assert.match(app, /elements\.action\.disabled = presentation\.disabled[^]*?!settingsReady[^]*?settingsBusy[^]*?autoSaveRefreshPending > 0[^]*?!modelCatalog/);
   assert.match(app, /if \(startPromise \|\| settingsBusy \|\| autoSaveRefreshPending > 0\) return startPromise;/);
+  assert.match(app, /bridge\.reportTrayState\(\{ state: nextState \}\)/);
+  assert.match(app, /onActivityChange: \(\) => renderSession\(\)/);
+  assert.match(app, /deriveTrayState\(\{\s*phase: state\.phase,\s*captureActive: capture\.active,\s*settingsReady,\s*engineReady: isEngineSetupReady\(\),\s*catalogReady: Boolean\(modelCatalog\)/s);
+  assert.match(app, /reportTrayState\(capture\.active \? "transcribing" : "stopped"\)/);
+  assert.match(app, /if \(action === "focus-start"\)[^]*?elements\.action\.focus\(\)/);
+  assert.doesNotMatch(app, /if \(action === "focus-start"\)[^]*?elements\.action\.click\(\)/);
   assert.match(app, /let settingsOperationPromise = Promise\.resolve\(\)/);
   assert.match(app, /function persistSettings\(patch\) \{\s*return runSettingsOperation/);
   assert.match(app, /function runSettingsOperation\(task\)[^]*?settingsBusy = true;\s*renderSession\(\);[^]*?settingsOperationPromise = operation\.then/);
@@ -157,6 +169,17 @@ test("main owns transcript destinations, resets autosave only after backend star
   assert.match(main, /function incompleteStopMessage\(reason\)/);
   assert.match(main, /const RENDERER_CLOSE_READY_TIMEOUT_MS = STOP_TIMEOUT_MS \+ 30_000;/);
   assert.match(main, /return finalizeCloseLifecycle\(\{/);
+  assert.match(main, /app\.requestSingleInstanceLock\(\)/);
+  assert.match(main, /isHiddenLaunch\(process\.argv\)/);
+  assert.match(main, /createTrayController\(\{/);
+  assert.match(main, /Never advertise Ready during that bootstrap gap\.[^]*?trayController\.setState\("preparing"\)/);
+  assert.match(main, /getWindowCloseAction\(\{/);
+  assert.match(main, /function createWindow\(\) \{\s*if \(mainWindow && !mainWindow\.isDestroyed\(\)\) return mainWindow;/);
+  assert.match(main, /function showMainWindow[^]*?if \(!desktopBootstrapReady\) \{\s*queueWindowShow\(\{ focusStart \}\);\s*return;/);
+  const bootstrap = main.slice(main.indexOf("app.whenReady().then"), main.indexOf('app.on("window-all-closed"'));
+  assert.equal(bootstrap.indexOf("registerIpc()") < bootstrap.indexOf("desktopBootstrapReady = true"), true);
+  assert.equal(bootstrap.indexOf("createApplicationTray()") < bootstrap.indexOf("desktopBootstrapReady = true"), true);
+  assert.equal(bootstrap.indexOf("desktopBootstrapReady = true") < bootstrap.indexOf("createWindow()"), true);
   assert.match(main, /stopBackend: async \(\) => \{[^]*?finally \{[^]*?meetingInProgress = false;[^]*?successfulStop = false;[^]*?resetCurrentAutoSavePath\(\);/);
 });
 

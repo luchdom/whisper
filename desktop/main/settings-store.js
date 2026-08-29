@@ -4,6 +4,7 @@ import path from "node:path";
 
 export const ALLOWED_LANGUAGES = Object.freeze(["auto", "en", "pt"]);
 export const ALLOWED_TRANSLATION_MODES = Object.freeze(["off", "en_to_pt_br"]);
+export const ALLOWED_CLOSE_BEHAVIORS = Object.freeze(["quit", "tray"]);
 
 export const DEFAULT_SETTINGS = Object.freeze({
   model: "small",
@@ -11,11 +12,14 @@ export const DEFAULT_SETTINGS = Object.freeze({
   diarization: true,
   translation: "off",
   transcriptDirectory: null,
-  autoSave: false
+  autoSave: false,
+  closeBehavior: "quit",
+  minimizeToTray: false
 });
 
 const LANGUAGE_SET = new Set(ALLOWED_LANGUAGES);
 const TRANSLATION_SET = new Set(ALLOWED_TRANSLATION_MODES);
+const CLOSE_BEHAVIOR_SET = new Set(ALLOWED_CLOSE_BEHAVIORS);
 const MAX_DIRECTORY_LENGTH = 4_096;
 
 export function sanitizeSettings(value, { catalog } = {}) {
@@ -44,7 +48,13 @@ export function sanitizeSettings(value, { catalog } = {}) {
     transcriptDirectory,
     autoSave: transcriptDirectory !== null && (typeof input.autoSave === "boolean"
       ? input.autoSave
-      : DEFAULT_SETTINGS.autoSave)
+      : DEFAULT_SETTINGS.autoSave),
+    closeBehavior: CLOSE_BEHAVIOR_SET.has(input.closeBehavior)
+      ? input.closeBehavior
+      : DEFAULT_SETTINGS.closeBehavior,
+    minimizeToTray: typeof input.minimizeToTray === "boolean"
+      ? input.minimizeToTray
+      : DEFAULT_SETTINGS.minimizeToTray
   };
 }
 

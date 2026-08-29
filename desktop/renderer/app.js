@@ -1,5 +1,5 @@
 import { CaptureController, CaptureStartCancelled, describeCaptureError } from "./capture-controller.js";
-import { SessionState } from "./lib/session-state.js";
+import { deriveTrayState, SessionState } from "./lib/session-state.js";
 import { SessionEventGate } from "./lib/session-event-gate.js";
 import { SerialTaskQueue } from "./lib/serial-task-queue.js";
 import { StartAttemptCancelled, StartAttemptGate } from "./lib/start-attempt.js";
@@ -18,7 +18,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   diarization: true,
   translation: "off",
   transcriptDirectory: null,
-  autoSave: false
+  autoSave: false,
+  closeBehavior: "quit",
+  minimizeToTray: false,
+  launchAtStartup: false
 });
 const COMPONENT_LABELS = Object.freeze({
   meeting_transcriber: "Meeting Transcriber backend",
@@ -91,6 +94,13 @@ const elements = {
   clearFolder: byId("clear-transcript-folder"),
   autoSave: byId("autosave-toggle"),
   settingsLockNote: byId("settings-lock-note"),
+  appBehaviorLockNote: byId("app-behavior-lock-note"),
+  closeBehaviorQuit: byId("close-behavior-quit"),
+  closeBehaviorTray: byId("close-behavior-tray"),
+  minimizeToTray: byId("minimize-to-tray"),
+  launchAtStartup: byId("launch-at-startup"),
+  startupAvailability: byId("startup-availability"),
+  trayLocationLabels: document.querySelectorAll("[data-tray-location]"),
   engineSetupCard: byId("engine-setup-card"),
   engineSetupTitle: byId("engine-setup-title"),
   engineSetupMessage: byId("engine-setup-message"),
@@ -122,10 +132,13 @@ let autoSaveCreated = false;
 let editingSegmentId = null;
 let editingSpeakerId = null;
 let autoSaveRefreshPending = 0;
+let platformInfo = { startupSupported: false, trayLocation: "notification area" };
+let lastReportedTrayState = null;
 
 const capture = new CaptureController({
   bridge,
   onSourceState: setSourceState,
+  onActivityChange: () => renderSession(),
   onInterruption: (track, error) => void interruptSession(track, error)
 });
 
@@ -145,6 +158,18 @@ elements.translation.addEventListener("change", () => void persistSettings({
   translation: elements.translation.checked ? "en_to_pt_br" : "off"
 }));
 elements.autoSave.addEventListener("change", () => void persistSettings({ autoSave: elements.autoSave.checked }));
+elements.closeBehaviorQuit.addEventListener("change", () => {
+  if (elements.closeBehaviorQuit.checked) void persistSettings({ closeBehavior: "quit" });
+});
+elements.closeBehaviorTray.addEventListener("change", () => {
+  if (elements.closeBehaviorTray.checked) void persistSettings({ closeBehavior: "tray" });
+});
+elements.minimizeToTray.addEventListener("change", () => void persistSettings({
+  minimizeToTray: elements.minimizeToTray.checked
+}));
+elements.launchAtStartup.addEventListener("change", () => void persistSettings({
+  launchAtStartup: elements.launchAtStartup.checked
+}));
 elements.settingsButton.addEventListener("click", () => openSettings());
 elements.settingsCloseTop.addEventListener("click", closeSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
@@ -162,6 +187,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 bridge.onBackendEvent(handleBackendEvent);
+bridge.onTrayAction((action) => void handleTrayAction(action));
 bridge.onBeforeClose(() => {
   void stopForClose().finally(() => bridge.notifyCloseReady());
 });
@@ -208,6 +234,11 @@ async function initialize() {
 }
 
 function applyPlatform(platform) {
+  platformInfo = {
+    startupSupported: platform?.startupSupported === true,
+    trayLocation: platform?.trayLocation === "menu bar" ? "menu bar" : "notification area"
+  };
+  for (const label of elements.trayLocationLabels) label.textContent = platformInfo.trayLocation;
   if (!platform?.systemAudioSupported) {
     elements.sourceSystem.checked = false;
     elements.sourceSystem.disabled = true;
@@ -263,11 +294,11 @@ async function startSession(generation) {
       diarization: settings.diarization,
       translation: settings.translation
     });
+    assertCurrentStart(generation);
     if (!startResult?.ok) throw new MeetingUiError("model_unavailable", startResult?.error);
     backendSessionStarted = true;
     autoSaveCreated = false;
     eventGate.activate(startResult.engine?.session_id);
-    assertCurrentStart(generation);
     transcript.reset();
     announcedFinalIds.clear();
     transcriptReplaced = true;
@@ -330,6 +361,10 @@ async function performStop() {
     await capture.stop();
   } catch (error) {
     stopError = error;
+  } finally {
+    // Never replace the overt recording indicator while capture still owns
+    // active tracks, including when stopping throws partway through cleanup.
+    reportTrayState(capture.active ? "transcribing" : "stopped");
   }
 
   if (backendSessionStarted) {
@@ -402,6 +437,37 @@ async function stopForClose() {
   await settingsOperationPromise;
   if (stopPromise) return stopPromise;
   if (state.active || backendSessionStarted || capture.active) return stopSession();
+}
+
+async function handleTrayAction(action) {
+  if (action === "focus-start") {
+    if (elements.settingsDialog.open) closeSettings();
+    requestAnimationFrame(() => elements.action.focus());
+    return;
+  }
+  if (action !== "stop") return;
+
+  if (state.phase === "starting") {
+    startGate.cancelCurrent();
+    const cancelBackend = bridge.cancelStart().catch(() => ({ ok: false }));
+    const stopCapture = capture.stop().catch(() => {});
+    await cancelBackend;
+    await stopCapture;
+    if (startPromise) await startPromise.catch(() => {});
+    return;
+  }
+  if (state.phase === "recording") await stopSession();
+}
+
+function reportTrayState(nextState) {
+  if (lastReportedTrayState === nextState) return;
+  lastReportedTrayState = nextState;
+  try {
+    bridge.reportTrayState({ state: nextState });
+  } catch {
+    // The in-window recording indicator remains authoritative if the native
+    // tray becomes unavailable during shutdown.
+  }
 }
 
 function assertCurrentStart(generation) {
@@ -498,6 +564,7 @@ function renderSession() {
     starting: { text: "Preparing local model", dot: "working", action: "Preparing…", disabled: true, mode: "start" },
     recording: { text: "Recording", dot: "recording", action: "Stop transcription", disabled: false, mode: "stop" },
     stopping: { text: "Finalizing transcript", dot: "working", action: "Finalizing…", disabled: true, mode: "stop" },
+    stopped: { text: "Stopped", dot: "neutral", action: "Start transcription", disabled: false, mode: "start" },
     error: { text: "Needs attention", dot: "recording", action: "Try again", disabled: false, mode: "start" }
   }[state.phase];
 
@@ -536,6 +603,13 @@ function renderSession() {
     button.disabled = isSpeakerEditingLocked();
   }
   if (!state.active) renderEngineSetupSummary();
+  reportTrayState(deriveTrayState({
+    phase: state.phase,
+    captureActive: capture.active,
+    settingsReady,
+    engineReady: isEngineSetupReady(),
+    catalogReady: Boolean(modelCatalog)
+  }));
   renderSettingsAvailability();
 }
 
@@ -555,6 +629,12 @@ function renderSettingsAvailability() {
   elements.chooseFolder.disabled = locked;
   elements.clearFolder.disabled = locked;
   elements.autoSave.disabled = locked || !settings.transcriptDirectory;
+  elements.closeBehaviorQuit.disabled = locked;
+  elements.closeBehaviorTray.disabled = locked;
+  elements.minimizeToTray.disabled = locked;
+  elements.launchAtStartup.disabled = locked || !platformInfo.startupSupported;
+  elements.startupAvailability.hidden = platformInfo.startupSupported;
+  elements.appBehaviorLockNote.hidden = !state.active;
   elements.settingsLockNote.hidden = !state.active;
   renderSelectedModelHelper();
   renderTranslationStatus();
@@ -1169,13 +1249,20 @@ function applySettings(value) {
     diarization: typeof value?.diarization === "boolean" ? value.diarization : DEFAULT_SETTINGS.diarization,
     translation: translationAvailable && value?.translation === "en_to_pt_br" ? "en_to_pt_br" : "off",
     transcriptDirectory: value?.transcriptDirectory || null,
-    autoSave: Boolean(value?.transcriptDirectory && value?.autoSave)
+    autoSave: Boolean(value?.transcriptDirectory && value?.autoSave),
+    closeBehavior: value?.closeBehavior === "tray" ? "tray" : "quit",
+    minimizeToTray: value?.minimizeToTray === true,
+    launchAtStartup: value?.launchAtStartup === true
   };
   elements.model.value = settings.model;
   elements.language.value = getEffectiveLanguage(modelById.get(settings.model), settings.language);
   elements.diarization.checked = settings.diarization;
   elements.translation.checked = settings.translation === "en_to_pt_br";
   elements.autoSave.checked = settings.autoSave;
+  elements.closeBehaviorQuit.checked = settings.closeBehavior === "quit";
+  elements.closeBehaviorTray.checked = settings.closeBehavior === "tray";
+  elements.minimizeToTray.checked = settings.minimizeToTray;
+  elements.launchAtStartup.checked = settings.launchAtStartup;
   elements.folder.textContent = settings.transcriptDirectory || "Not set — choose a location when you save.";
   elements.folder.title = settings.transcriptDirectory || "Not set";
   elements.folder.setAttribute(

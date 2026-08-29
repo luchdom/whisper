@@ -75,13 +75,19 @@ test("settings IPC policy accepts only renderer-editable scalar fields", () => {
     language: "en",
     diarization: false,
     translation: "en_to_pt_br",
-    autoSave: true
+    autoSave: true,
+    closeBehavior: "tray",
+    minimizeToTray: true,
+    launchAtStartup: true
   }, { catalog }), {
     model: "base.en",
     language: "en",
     diarization: false,
     translation: "en_to_pt_br",
-    autoSave: true
+    autoSave: true,
+    closeBehavior: "tray",
+    minimizeToTray: true,
+    launchAtStartup: true
   });
 
   assert.throws(
@@ -95,5 +101,17 @@ test("settings IPC policy accepts only renderer-editable scalar fields", () => {
   assert.throws(
     () => validateRendererSettingsPatch({ translation: "en_to_pt_br" }, { catalog: unavailableCatalog }),
     /unavailable in this build/
+  );
+  assert.throws(
+    () => validateRendererSettingsPatch({ closeBehavior: "hide" }, { catalog }),
+    /close behavior is invalid/
+  );
+  assert.throws(
+    () => validateRendererSettingsPatch({ minimizeToTray: "yes" }, { catalog }),
+    /minimize-to-tray setting is invalid/
+  );
+  assert.throws(
+    () => validateRendererSettingsPatch({ launchAtStartup: 1 }, { catalog }),
+    /launch-at-startup setting is invalid/
   );
 });

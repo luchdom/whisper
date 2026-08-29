@@ -6,12 +6,14 @@ export class CaptureController {
   constructor({
     bridge,
     onSourceState = () => {},
+    onActivityChange = () => {},
     onInterruption = () => {},
     requesters,
     now = () => performance.now()
   }) {
     this.bridge = bridge;
     this.onSourceState = onSourceState;
+    this.onActivityChange = onActivityChange;
     this.onInterruption = onInterruption;
     this.requesters = requesters ?? {
       system: requestSystemAudio,
@@ -28,7 +30,7 @@ export class CaptureController {
   }
 
   get active() {
-    return this.sources.size > 0;
+    return this.sources.size > 0 || (this.startAttempt?.acquired.size ?? 0) > 0;
   }
 
   async start(selection, { signal } = {}) {
@@ -52,9 +54,11 @@ export class CaptureController {
     try {
       if (selection.system) {
         attempt.acquired.set("system", await this.acquire("system", attempt));
+        this.onActivityChange(this.active);
       }
       if (selection.microphone) {
         attempt.acquired.set("microphone", await this.acquire("microphone", attempt));
+        this.onActivityChange(this.active);
       }
 
       // Permissions are acquired before audio processing starts. Both tracks
@@ -74,14 +78,19 @@ export class CaptureController {
         }
       }
     } catch (error) {
-      for (const stream of attempt.acquired.values()) {
-        if (![...this.sources.values()].some((source) => source.stream === stream)) stopMediaStream(stream);
+      for (const [track, stream] of attempt.acquired) {
+        if (![...this.sources.values()].some((source) => source.stream === stream)) {
+          stopMediaStream(stream);
+          attempt.acquired.delete(track);
+        }
       }
+      this.onActivityChange(this.active);
       await this.stop().catch(() => {});
       throw error;
     } finally {
       signal?.removeEventListener("abort", attempt.onAbort);
       if (this.startAttempt === attempt) this.startAttempt = null;
+      this.onActivityChange(this.active);
     }
   }
 
@@ -207,6 +216,8 @@ export class CaptureController {
     attempt.reason = reason instanceof Error ? reason : new CaptureStartCancelled();
     this.stopping = true;
     for (const stream of attempt.acquired.values()) stopMediaStream(stream);
+    attempt.acquired.clear();
+    this.onActivityChange(this.active);
   }
 
   assertAttemptCurrent(attempt) {
@@ -251,6 +262,7 @@ export class CaptureController {
       this.onSourceState(source.track, "stopped", "Ready to start");
     }
     this.sources.clear();
+    this.onActivityChange(this.active);
     this.sessionOriginMs = 0;
     this.stopping = false;
 

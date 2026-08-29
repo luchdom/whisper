@@ -1,10 +1,24 @@
 import path from "node:path";
-import { ALLOWED_LANGUAGES, ALLOWED_TRANSLATION_MODES } from "./settings-store.js";
+import {
+  ALLOWED_CLOSE_BEHAVIORS,
+  ALLOWED_LANGUAGES,
+  ALLOWED_TRANSLATION_MODES
+} from "./settings-store.js";
 
 const START_KEYS = new Set(["model", "language", "diarization", "translation"]);
-const SETTINGS_PATCH_KEYS = new Set(["model", "language", "diarization", "translation", "autoSave"]);
+const SETTINGS_PATCH_KEYS = new Set([
+  "model",
+  "language",
+  "diarization",
+  "translation",
+  "autoSave",
+  "closeBehavior",
+  "minimizeToTray",
+  "launchAtStartup"
+]);
 const LANGUAGE_SET = new Set(ALLOWED_LANGUAGES);
 const TRANSLATION_SET = new Set(ALLOWED_TRANSLATION_MODES);
+const CLOSE_BEHAVIOR_SET = new Set(ALLOWED_CLOSE_BEHAVIORS);
 
 export function createBackendStartOptions(value, { userDataPath, catalog } = {}) {
   assertCatalog(catalog);
@@ -71,6 +85,24 @@ export function validateRendererSettingsPatch(value, { catalog } = {}) {
   if ("autoSave" in value) {
     if (typeof value.autoSave !== "boolean") throw new TypeError("The automatic save setting is invalid.");
     patch.autoSave = value.autoSave;
+  }
+  if ("closeBehavior" in value) {
+    if (!CLOSE_BEHAVIOR_SET.has(value.closeBehavior)) {
+      throw new TypeError("The window close behavior is invalid.");
+    }
+    patch.closeBehavior = value.closeBehavior;
+  }
+  if ("minimizeToTray" in value) {
+    if (typeof value.minimizeToTray !== "boolean") {
+      throw new TypeError("The minimize-to-tray setting is invalid.");
+    }
+    patch.minimizeToTray = value.minimizeToTray;
+  }
+  if ("launchAtStartup" in value) {
+    if (typeof value.launchAtStartup !== "boolean") {
+      throw new TypeError("The launch-at-startup setting is invalid.");
+    }
+    patch.launchAtStartup = value.launchAtStartup;
   }
   return patch;
 }

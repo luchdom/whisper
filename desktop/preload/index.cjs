@@ -6,6 +6,8 @@ function on(channel, listener) {
   return () => ipcRenderer.removeListener(channel, wrapped);
 }
 
+const TRAY_ACTIONS = new Set(["focus-start", "stop"]);
+
 contextBridge.exposeInMainWorld("meeting", Object.freeze({
   start: (options) => ipcRenderer.invoke("meeting:start", options),
   sendAudio: ({ track, startMs, endMs, pcm }) => {
@@ -27,6 +29,10 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   getEnginePrerequisites: () => ipcRenderer.invoke("meeting:engine-prerequisites"),
   openPythonDownloadPage: () => ipcRenderer.invoke("meeting:open-python-download"),
   copyBootstrapCommand: () => ipcRenderer.invoke("meeting:copy-bootstrap-command"),
+  reportTrayState: ({ state }) => ipcRenderer.send("meeting:tray-state", { state }),
+  onTrayAction: (listener) => on("meeting:tray-action", (action) => {
+    if (TRAY_ACTIONS.has(action)) listener(action);
+  }),
   onBackendEvent: (listener) => on("meeting:backend-event", listener),
   onBeforeClose: (listener) => on("meeting:before-close", listener),
   notifyCloseReady: () => ipcRenderer.send("meeting:close-ready")

@@ -1,9 +1,28 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, screen, session, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  screen,
+  session,
+  shell,
+  Tray
+} from "electron";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BackendController, STOP_TIMEOUT_MS } from "./backend-controller.js";
 import { BackendSetupManager } from "./backend-setup.js";
-import { createCloseCoordinator, createCloseReadyGate, finalizeCloseLifecycle } from "./close-lifecycle.js";
+import {
+  createCloseCoordinator,
+  createCloseReadyGate,
+  finalizeCloseLifecycle,
+  getWindowCloseAction,
+  getWindowMinimizeAction
+} from "./close-lifecycle.js";
 import { createBackendStartOptions, validateRendererSettingsPatch } from "./desktop-policy.js";
 import { loadModelCatalog } from "./model-catalog.js";
 import {
@@ -23,6 +42,8 @@ import {
   isTrustedFileOrigin,
   supportsSystemAudio
 } from "./platform.js";
+import { createStartupService, isHiddenLaunch } from "./startup-service.js";
+import { createTrayController, validateTrayStateDto } from "./tray-controller.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
@@ -56,6 +77,8 @@ const PUBLIC_ERROR_MESSAGES = new Set([
   "Settings update contains an unsupported field.",
   "Settings update must be an object.",
   "The automatic save setting is invalid.",
+  "The launch-at-startup setting is invalid.",
+  "The minimize-to-tray setting is invalid.",
   "The local application data path is invalid.",
   "The local audio queue reached its safety limit.",
   "The local model startup could not be canceled normally.",
@@ -75,13 +98,21 @@ const PUBLIC_ERROR_MESSAGES = new Set([
   "The transcription backend is not writable.",
   "The transcription engine is not ready for audio.",
   "The transcript folder could not be selected.",
+  "The window close behavior is invalid.",
+  "Launch at sign-in is available in an installed Windows or macOS app.",
   "Transcription settings are invalid.",
   "Transcription settings contain an unsupported field."
 ]);
 
 let mainWindow = null;
 let allowWindowClose = false;
+let quitRequested = false;
+let hideNextWindowOnReady = isHiddenLaunch(process.argv);
 let settingsStore = null;
+let startupService = null;
+let trayController = null;
+let desktopBootstrapReady = false;
+let pendingWindowShow = null;
 let settings = { ...DEFAULT_SETTINGS };
 let modelCatalog = null;
 let meetingInProgress = false;
@@ -106,7 +137,10 @@ backend.on("event", (event) => {
 });
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   allowWindowClose = false;
+  const startHidden = hideNextWindowOnReady;
+  hideNextWindowOnReady = false;
   mainWindow = new BrowserWindow({
     width: 1_000,
     height: 700,
@@ -128,7 +162,10 @@ function createWindow() {
     }
   });
 
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => {
+    const pending = takePendingWindowShow();
+    if (!startHidden || pending) revealMainWindow(pending ?? {});
+  });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
     if (navigationUrl !== rendererUrl) event.preventDefault();
@@ -136,12 +173,96 @@ function createWindow() {
   mainWindow.on("close", (event) => {
     if (allowWindowClose) return;
     event.preventDefault();
-    void closeCoordinator.request();
+    const action = getWindowCloseAction({
+      closeBehavior: settings.closeBehavior,
+      quitRequested
+    });
+    if (action === "hide") {
+      mainWindow?.hide();
+      return;
+    }
+    requestApplicationQuit();
+  });
+  mainWindow.on("minimize", (event) => {
+    if (getWindowMinimizeAction(settings) !== "hide") return;
+    event.preventDefault();
+    mainWindow?.hide();
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
   void mainWindow.loadFile(rendererEntry);
+  return mainWindow;
+}
+
+function showMainWindow({ focusStart = false } = {}) {
+  if (!desktopBootstrapReady) {
+    queueWindowShow({ focusStart });
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    queueWindowShow({ focusStart });
+    return;
+  }
+  revealMainWindow({ focusStart });
+}
+
+function revealMainWindow({ focusStart = false } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (!focusStart) return;
+  const signalFocus = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("meeting:tray-action", "focus-start");
+    }
+  };
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once("did-finish-load", signalFocus);
+  } else {
+    signalFocus();
+  }
+}
+
+function queueWindowShow({ focusStart = false } = {}) {
+  pendingWindowShow = {
+    focusStart: focusStart || pendingWindowShow?.focusStart === true
+  };
+}
+
+function takePendingWindowShow() {
+  const pending = pendingWindowShow;
+  pendingWindowShow = null;
+  return pending;
+}
+
+function requestTrayStop() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("meeting:tray-action", "stop");
+}
+
+function requestApplicationQuit() {
+  quitRequested = true;
+  void closeCoordinator.request({ quit: true });
+}
+
+function createApplicationTray() {
+  if (trayController) return;
+  trayController = createTrayController({
+    Tray,
+    Menu,
+    nativeImage,
+    platform: process.platform,
+    showWindow: showMainWindow,
+    requestStop: requestTrayStop,
+    requestQuit: requestApplicationQuit
+  });
+  // Readiness is not established until the renderer reconciles the catalog
+  // and prerequisite doctor. Never advertise Ready during that bootstrap gap.
+  trayController.setState("preparing");
 }
 
 async function closeWindowSafely({ shouldQuit }) {
@@ -241,6 +362,7 @@ function registerIpc() {
           error: "The local engine is not ready. Open Settings, complete the suggested setup, and check again."
         };
       }
+      trayController?.setState("preparing");
       const engine = await backend.startSession(createBackendStartOptions(options, {
         userDataPath: app.getPath("userData"),
         catalog: modelCatalog
@@ -251,6 +373,7 @@ function registerIpc() {
       transcriptFiles.resetCurrentAutoSavePath();
       return { ok: true, engine };
     } catch (error) {
+      trayController?.setState("error");
       return { ok: false, error: publicError(error, "The local transcription engine could not start.") };
     }
   });
@@ -363,7 +486,7 @@ function registerIpc() {
     if (!modelCatalog) return modelCatalogUnavailableResult();
     return {
       ok: true,
-      settings: { ...settings },
+      settings: getRendererSettings(),
       catalog: modelCatalog.getRendererDto()
     };
   });
@@ -374,8 +497,14 @@ function registerIpc() {
     try {
       if (!modelCatalog || !settingsStore) return modelCatalogUnavailableResult();
       const safePatch = validateRendererSettingsPatch(patch, { catalog: modelCatalog });
-      settings = await settingsStore.update(safePatch);
-      return { ok: true, settings: { ...settings } };
+      const { launchAtStartup, ...persistedPatch } = safePatch;
+      if (Object.hasOwn(safePatch, "launchAtStartup")) {
+        startupService.setEnabled(launchAtStartup);
+      }
+      if (Object.keys(persistedPatch).length > 0) {
+        settings = await settingsStore.update(persistedPatch);
+      }
+      return { ok: true, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "Settings could not be saved.") };
     }
@@ -391,13 +520,13 @@ function registerIpc() {
         properties: ["openDirectory", "createDirectory"]
       });
       if (result.canceled || result.filePaths.length !== 1) {
-        return { ok: true, canceled: true, settings: { ...settings } };
+        return { ok: true, canceled: true, settings: getRendererSettings() };
       }
       settings = await settingsStore.update({
         transcriptDirectory: result.filePaths[0],
         autoSave: true
       });
-      return { ok: true, canceled: false, settings: { ...settings } };
+      return { ok: true, canceled: false, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "The transcript folder could not be selected.") };
     }
@@ -409,7 +538,7 @@ function registerIpc() {
     try {
       if (!modelCatalog || !settingsStore) return modelCatalogUnavailableResult();
       settings = await settingsStore.update({ transcriptDirectory: null, autoSave: false });
-      return { ok: true, settings: { ...settings } };
+      return { ok: true, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "The transcript folder setting could not be cleared.") };
     }
@@ -424,6 +553,8 @@ function registerIpc() {
     return {
       platform: process.platform,
       systemAudioSupported,
+      startupSupported: startupService?.supported === true,
+      trayLocation: process.platform === "darwin" ? "menu bar" : "notification area",
       systemAudioRequirement: !systemAudioSupported
         ? process.platform === "darwin"
           ? "Meeting audio requires macOS 15 or later."
@@ -473,6 +604,19 @@ function registerIpc() {
   ipcMain.on("meeting:close-ready", (event) => {
     if (isTrustedIpcEvent(event)) closeReadyGate.notify();
   });
+
+  ipcMain.on("meeting:tray-state", (event, value) => {
+    if (!isTrustedIpcEvent(event)) return;
+    const trayState = validateTrayStateDto(value);
+    if (trayState) trayController?.setState(trayState.state);
+  });
+}
+
+function getRendererSettings() {
+  return {
+    ...settings,
+    launchAtStartup: startupService?.isEnabled() === true
+  };
 }
 
 function isTrustedRendererFrame(frame) {
@@ -529,38 +673,58 @@ function incompleteStopMessage(reason) {
   return "The transcript did not finalize completely. Automatic saving was skipped. Review the visible text; Save copy exports completed segments only.";
 }
 
-app.whenReady().then(async () => {
-  if (process.platform === "win32") app.setAppUserModelId("com.luchdom.meetingtranscriber");
-  try {
-    modelCatalog = await loadModelCatalog({ manifestPath: modelManifestPath });
-  } catch {
-    modelCatalog = null;
-  }
-  if (modelCatalog) {
-    settingsStore = createSettingsStore({
-      userDataPath: app.getPath("userData"),
-      catalog: modelCatalog
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showMainWindow());
+
+  app.whenReady().then(async () => {
+    if (process.platform === "win32") app.setAppUserModelId("com.luchdom.meetingtranscriber");
+    startupService = createStartupService({
+      electronApp: app,
+      platform: process.platform,
+      isPackaged: app.isPackaged
     });
+    if (startupService.wasOpenedAtLogin()) hideNextWindowOnReady = true;
     try {
-      settings = await settingsStore.load();
+      modelCatalog = await loadModelCatalog({ manifestPath: modelManifestPath });
     } catch {
-      settings = { ...DEFAULT_SETTINGS };
+      modelCatalog = null;
     }
-  }
-  registerIpc();
-  configureMediaCapture();
-  createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (modelCatalog) {
+      settingsStore = createSettingsStore({
+        userDataPath: app.getPath("userData"),
+        catalog: modelCatalog
+      });
+      try {
+        settings = await settingsStore.load();
+      } catch {
+        settings = { ...DEFAULT_SETTINGS };
+      }
+    }
+    registerIpc();
+    configureMediaCapture();
+    createApplicationTray();
+    desktopBootstrapReady = true;
+    createWindow();
+    app.on("activate", () => showMainWindow());
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app.on("window-all-closed", () => {
+    if (quitRequested || process.platform !== "darwin") app.quit();
+  });
 
-app.on("before-quit", (event) => {
-  if (!mainWindow || allowWindowClose) return;
-  event.preventDefault();
-  void closeCoordinator.request({ quit: true });
-});
+  app.on("before-quit", (event) => {
+    quitRequested = true;
+    if (!mainWindow || allowWindowClose) return;
+    event.preventDefault();
+    void closeCoordinator.request({ quit: true });
+  });
+
+  app.on("will-quit", () => {
+    trayController?.destroy();
+    trayController = null;
+  });
+}

@@ -91,6 +91,43 @@ test("stop cancels delayed system acquisition before requesting or attaching ano
   assert.equal(controller.active, false);
 });
 
+test("one acquired source is active while a second selected source is still delayed", async () => {
+  const systemStream = createStoppedStreamProbe();
+  const microphoneStream = createStoppedStreamProbe();
+  const activity = [];
+  let releaseMicrophone;
+  let microphoneRequests = 0;
+  const delayedMicrophone = new Promise((resolve) => { releaseMicrophone = resolve; });
+  const controller = new CaptureController({
+    bridge: { sendAudio: async () => ({ ok: true }) },
+    requesters: {
+      system: async () => systemStream.stream,
+      microphone: async () => {
+        microphoneRequests += 1;
+        return delayedMicrophone;
+      }
+    },
+    onActivityChange: (active) => activity.push(active),
+    now: () => 0
+  });
+
+  const starting = controller.start({ system: true, microphone: true });
+  await waitFor(() => microphoneRequests === 1);
+
+  assert.equal(controller.active, true);
+  assert.equal(activity.at(-1), true);
+
+  const stopping = controller.stop();
+  releaseMicrophone(microphoneStream.stream);
+  await stopping;
+  await assert.rejects(starting, CaptureStartCancelled);
+
+  assert.equal(systemStream.stopped, true);
+  assert.equal(microphoneStream.stopped, true);
+  assert.equal(controller.active, false);
+  assert.equal(activity.at(-1), false);
+});
+
 function createStoppedStreamProbe() {
   let stopCount = 0;
   const track = { stop: () => { stopCount += 1; } };

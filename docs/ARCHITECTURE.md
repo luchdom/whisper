@@ -21,7 +21,7 @@ The two audio sources stay separate from capture through inference. That gives a
 
 ### Desktop main process
 
-- Owns the Electron window, OS media permissions, system-loopback selection, settings persistence, safe local export, and sidecar lifecycle.
+- Owns the Electron window, single-instance lock, native tray, OS login-item integration, OS media permissions, system-loopback selection, settings persistence, safe local export, and sidecar lifecycle.
 - Validates every renderer command and every sidecar event at the IPC boundary.
 - Loads the bundled model manifest and exposes only a sanitized catalog data-transfer object (DTO) containing public IDs and presentation metadata. Repository revisions, URLs, hashes, and local cache paths do not cross into the renderer.
 - Relays only allowlisted model-preparation phases; app-owned cache paths and download internals never cross into the renderer.
@@ -36,6 +36,7 @@ The two audio sources stay separate from capture through inference. That gives a
 - Builds the model picker from the sanitized catalog instead of maintaining a second model allowlist.
 - Reconciles stable segment IDs by increasing revision, assigns first-seen friendly labels, applies session-local manual aliases, preserves original text as canonical, and exports finalized text only.
 - Presents model preparation as accessible indeterminate progress and clears it when the engine becomes ready or unavailable.
+- Reports only an exact tray-state enum and accepts only fixed focus/stop tray actions; transcript text, errors, paths, and participant data never enter native tray content.
 
 ### Python sidecar
 
@@ -91,7 +92,8 @@ This boundary lets a future engine use a native streaming recognizer, local WebS
 
 ## Privacy and safety invariants
 
-- Capture is explicit and visibly indicated. A later tray mode may minimize the window, but must keep an unmistakable recording badge, timer, and stop action.
+- Capture is explicit and visibly indicated. Hiding the window is opt in; the native tray keeps a distinct recording symbol, elapsed timer, and stop action until capture actually stops.
+- Tray **Start transcription…** only reveals and focuses the visible Start control. Login-item and `--hidden` launches never start capture.
 - Audio is memory-only and is never sent to a transcription API.
 - A selected model can access the network only for initial provisioning. Every later startup re-verifies the app-owned local artifact and can remain offline when verification succeeds.
 - Speaker embeddings are biometric-derived data. They remain memory-only and are cleared at meeting end; only anonymous IDs and user-entered display aliases reach transcript events/files.
@@ -103,7 +105,7 @@ This boundary lets a future engine use a native streaming recognizer, local WebS
 
 ## Platform boundary
 
-Windows 11 capture and local inference have been exercised in this workspace. The built-in macOS system-audio path uses Electron's native picker and is gated to macOS 15 or newer; microphone-only capture remains available below that gate. macOS capture behavior, Apple Silicon performance, signing, notarization, and packaging remain unverified until tested on actual macOS hardware.
+Windows 11 capture and local inference have been exercised in this workspace. The built-in macOS system-audio path uses Electron's native picker and is gated to macOS 15 or newer; microphone-only capture remains available below that gate. Tray and login-item decisions are covered by injected Windows/macOS policy tests, while actual macOS menu-bar, login-item, capture, Apple Silicon performance, signing, notarization, and packaging remain unverified until tested on actual macOS hardware.
 
 Local translation is currently enabled only for Windows x64. The INT8 converted output was reproduced twice with identical hashes on that platform. The macOS setting stays unavailable until the conversion outputs and runtime behavior are verified on Intel and Apple Silicon as applicable; the application does not assume that Windows conversion hashes are portable.
 
@@ -121,5 +123,5 @@ A one-sentence English-to-pt-BR smoke completed in 0.109 seconds on the validate
 2. Validate macOS system audio, microphone capture, speaker clustering, ASR performance, and deterministic local translation conversion/runtime behavior on actual macOS hardware before enabling its translation toggle.
 3. Decide whether an explicit opt-in audio-retention mode is acceptable for a stronger offline, overlap-aware speaker correction pass.
 4. Decide whether to port the proven live subsystem into a Vibe fork or continue this shell.
-5. Add an overt tray experience, meeting detection, retention controls, and a bundled/signed runtime.
+5. Validate the overt tray experience on macOS hardware, then add meeting detection, retention controls, and a bundled/signed runtime.
 6. Only then introduce a local meeting copilot with explicit privacy, consent, and output-quality safeguards.
