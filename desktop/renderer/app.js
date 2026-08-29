@@ -48,6 +48,25 @@ const ENGINE_SETUP_STATES = Object.freeze([
   "check_failed"
 ]);
 const ASSIST_QUESTION_MAX_CHARS = 1_000;
+const CONTEXT_PACK_MAX_SELECTED = 12;
+const CONTEXT_PACK_KINDS = new Set([
+  "objective",
+  "talking_points",
+  "job_description",
+  "resume",
+  "product_facts",
+  "presentation_notes",
+  "custom_notes"
+]);
+const CONTEXT_KIND_LABELS = Object.freeze({
+  objective: "Meeting objective",
+  talking_points: "Talking points",
+  job_description: "Role or job description",
+  resume: "Resume or experience",
+  product_facts: "Product facts",
+  presentation_notes: "Presentation notes",
+  custom_notes: "Custom notes"
+});
 const ASSIST_PROVIDER_LINK_IDS = new Set(["privacy", "data-controls", "usage"]);
 const ASSIST_CREDENTIAL_STATES = new Set(["absent", "configured", "invalid", "unreadable"]);
 const INITIAL_ENGINE_SETUP = Object.freeze({
@@ -127,6 +146,29 @@ const elements = {
   providerDisclosureLinks: byId("provider-disclosure-links"),
   providerFeedback: byId("provider-feedback"),
   providerLockNote: byId("provider-lock-note"),
+  meetingProfile: byId("meeting-profile-select"),
+  meetingProfileName: byId("meeting-profile-name"),
+  meetingProfileDescription: byId("meeting-profile-description"),
+  meetingProfileLimitations: byId("meeting-profile-limitations"),
+  selectedContextPacks: byId("selected-context-packs"),
+  manageContextPacks: byId("manage-context-packs"),
+  meetingContextLockNote: byId("meeting-context-lock-note"),
+  contextPacksDialog: byId("context-packs-dialog"),
+  contextPacksCloseTop: byId("close-context-packs-top"),
+  contextPacksClose: byId("close-context-packs"),
+  contextPackStorageWarning: byId("context-pack-storage-warning"),
+  contextPackList: byId("context-pack-list"),
+  contextPackListEmpty: byId("context-pack-list-empty"),
+  newContextPack: byId("new-context-pack"),
+  contextPackForm: byId("context-pack-form"),
+  contextPackId: byId("context-pack-id"),
+  contextPackRevision: byId("context-pack-revision"),
+  contextPackKind: byId("context-pack-kind"),
+  contextPackName: byId("context-pack-name"),
+  contextPackContent: byId("context-pack-content"),
+  contextPackFeedback: byId("context-pack-feedback"),
+  contextPackCancelEdit: byId("cancel-context-pack-edit"),
+  contextPackSave: byId("save-context-pack"),
   assistPanel: byId("assist-panel"),
   assistStateBadge: byId("assist-state-badge"),
   assistEmpty: byId("assist-empty"),
@@ -136,6 +178,7 @@ const elements = {
   assistDismissCollapsed: byId("dismiss-assist-collapsed"),
   assistExpanded: byId("assist-expanded"),
   assistContextSummary: byId("assist-context-summary"),
+  assistQuickActions: byId("assist-quick-actions"),
   assistReviewContext: byId("review-assist-context"),
   assistProviderAvailability: byId("assist-provider-availability"),
   assistProviderMessage: byId("assist-provider-message"),
@@ -145,6 +188,7 @@ const elements = {
   assistQuestionValidation: byId("assist-question-validation"),
   assistConsent: byId("assist-consent"),
   assistDisclosure: byId("assist-disclosure"),
+  assistRequestPreview: byId("assist-request-preview"),
   assistPolicyVersion: byId("assist-policy-version"),
   assistProviderLinks: byId("assist-provider-links"),
   assistProgress: byId("assist-progress"),
@@ -163,6 +207,7 @@ const elements = {
   assistSend: byId("send-assist"),
   assistContextDialog: byId("assist-context-dialog"),
   assistContextDialogSummary: byId("assist-context-dialog-summary"),
+  assistContextPrivateSummary: byId("assist-context-private-summary"),
   assistContextList: byId("assist-context-list"),
   assistContextDialogEmpty: byId("assist-context-dialog-empty"),
   assistContextCloseTop: byId("close-assist-context-top"),
@@ -189,6 +234,10 @@ let settingsOperationPromise = Promise.resolve();
 let providerStatus = null;
 let providerStatusPromise = null;
 let providerBusy = false;
+let assistLibrary = createEmptyAssistLibrary();
+let assistSelection = createDefaultAssistSelection();
+let activeAssistSelection = null;
+let contextPackBusy = false;
 let assistStatus = null;
 let assistStatusRequest = null;
 let assistStatusRefreshTimer = null;
@@ -264,6 +313,16 @@ elements.providerModeOpenAI.addEventListener("change", () => {
 elements.providerModel.addEventListener("change", () => void persistProviderSettings({
   openAIModel: elements.providerModel.value
 }));
+elements.meetingProfile.addEventListener("change", handleMeetingProfileChange);
+elements.manageContextPacks.addEventListener("click", openContextPacksDialog);
+elements.contextPacksCloseTop.addEventListener("click", closeContextPacksDialog);
+elements.contextPacksClose.addEventListener("click", closeContextPacksDialog);
+elements.newContextPack.addEventListener("click", () => beginContextPackEdit());
+elements.contextPackCancelEdit.addEventListener("click", cancelContextPackEdit);
+elements.contextPackForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void saveContextPack();
+});
 elements.importProviderCredential.addEventListener("click", () => void importProviderCredential());
 elements.revokeProviderCredential.addEventListener("click", () => void revokeProviderCredential());
 elements.assistExpand.addEventListener("click", () => void revealAssist({ focusQuestion: true }));
@@ -291,6 +350,7 @@ elements.openPythonDownload.addEventListener("click", () => void openPythonDownl
 elements.copySetupCommand.addEventListener("click", () => void copySetupCommand());
 elements.checkEngineSetup.addEventListener("click", () => void checkEngineSetup());
 elements.settingsDialog.addEventListener("close", () => elements.settingsButton.focus());
+elements.contextPacksDialog.addEventListener("close", () => elements.manageContextPacks.focus());
 elements.assistContextDialog.addEventListener("close", () => {
   if (assistExpanded && !elements.assistReviewContext.disabled) elements.assistReviewContext.focus();
 });
@@ -324,10 +384,11 @@ renderAssist();
 void initialize();
 
 async function initialize() {
-  const [platformResult, settingsResult, setupResult] = await Promise.allSettled([
+  const [platformResult, settingsResult, setupResult, libraryResult] = await Promise.allSettled([
     bridge.getPlatform(),
     bridge.getSettings(),
-    bridge.getEnginePrerequisites()
+    bridge.getEnginePrerequisites(),
+    bridge.getAssistLibrary()
   ]);
 
   if (platformResult.status === "fulfilled") applyPlatform(platformResult.value);
@@ -356,9 +417,464 @@ async function initialize() {
   } else {
     applyEngineCheckFailure();
   }
+  if (libraryResult.status === "fulfilled" && libraryResult.value?.ok) {
+    applyAssistLibrary(libraryResult.value.library);
+  } else {
+    applyAssistLibrary(null);
+  }
   settingsReady = true;
   renderSession();
   void refreshAssistStatus();
+}
+
+function createEmptyAssistLibrary() {
+  return Object.freeze({
+    profiles: Object.freeze({ schemaVersion: 1, defaultProfileId: "general", profiles: Object.freeze([]) }),
+    secureStorageAvailable: false,
+    contextPacksAvailable: false,
+    contextPacks: Object.freeze([])
+  });
+}
+
+function createDefaultAssistSelection() {
+  return Object.freeze({
+    profile: Object.freeze({ profileId: "general", profileVersion: 1 }),
+    contextPacks: Object.freeze([])
+  });
+}
+
+function applyAssistLibrary(value) {
+  let nextLibrary;
+  try {
+    nextLibrary = sanitizeAssistLibrary(value);
+  } catch {
+    nextLibrary = createEmptyAssistLibrary();
+  }
+  assistLibrary = nextLibrary;
+  assistSelection = reconcileAssistSelection(assistSelection, nextLibrary);
+  renderMeetingContextSetup();
+  if (elements.contextPacksDialog.open) renderContextPacksDialog();
+}
+
+function sanitizeAssistLibrary(value) {
+  if (!isPlainRendererRecord(value)
+    || typeof value.secureStorageAvailable !== "boolean"
+    || typeof value.contextPacksAvailable !== "boolean"
+    || !Array.isArray(value.contextPacks)
+    || value.contextPacks.length > 24) {
+    throw new Error("Meeting assistance library is invalid.");
+  }
+  const profiles = sanitizeMeetingProfileCatalog(value.profiles);
+  const contextPacks = value.contextPacks.map(sanitizeContextPack);
+  const ids = new Set();
+  for (const pack of contextPacks) {
+    if (ids.has(pack.id)) throw new Error("Meeting assistance library is invalid.");
+    ids.add(pack.id);
+  }
+  if ((!value.secureStorageAvailable || !value.contextPacksAvailable) && contextPacks.length > 0) {
+    throw new Error("Meeting assistance library is invalid.");
+  }
+  return Object.freeze({
+    profiles,
+    secureStorageAvailable: value.secureStorageAvailable,
+    contextPacksAvailable: value.contextPacksAvailable,
+    contextPacks: Object.freeze(contextPacks)
+  });
+}
+
+function sanitizeMeetingProfileCatalog(value) {
+  if (!isPlainRendererRecord(value)
+    || value.schemaVersion !== 1
+    || typeof value.defaultProfileId !== "string"
+    || !Array.isArray(value.profiles)
+    || value.profiles.length === 0
+    || value.profiles.length > 24) {
+    throw new Error("Meeting profiles are invalid.");
+  }
+  const profiles = value.profiles.map(sanitizeMeetingProfile);
+  const ids = new Set(profiles.map(({ id }) => id));
+  if (ids.size !== profiles.length || !ids.has(value.defaultProfileId)) {
+    throw new Error("Meeting profiles are invalid.");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    defaultProfileId: value.defaultProfileId,
+    profiles: Object.freeze(profiles)
+  });
+}
+
+function sanitizeMeetingProfile(value) {
+  if (!isPlainRendererRecord(value)
+    || !isSafeRendererIdentifier(value.id)
+    || !Number.isSafeInteger(value.version)
+    || value.version <= 0
+    || !Array.isArray(value.allowedContextKinds)
+    || value.allowedContextKinds.length === 0
+    || !Array.isArray(value.quickActions)
+    || value.quickActions.length > 8
+    || !Array.isArray(value.limitations)
+    || value.limitations.length === 0
+    || value.limitations.length > 8) {
+    throw new Error("Meeting profile is invalid.");
+  }
+  const allowedContextKinds = value.allowedContextKinds.map((kind) => {
+    if (!CONTEXT_PACK_KINDS.has(kind)) throw new Error("Meeting profile is invalid.");
+    return kind;
+  });
+  if (new Set(allowedContextKinds).size !== allowedContextKinds.length) {
+    throw new Error("Meeting profile is invalid.");
+  }
+  return Object.freeze({
+    id: value.id,
+    version: value.version,
+    name: requireRendererText(value.name, 120),
+    description: requireRendererText(value.description, 500),
+    responseStyle: requireRendererText(value.responseStyle, 1_000),
+    allowedContextKinds: Object.freeze(allowedContextKinds),
+    quickActions: Object.freeze(value.quickActions.map((action) => {
+      if (!isPlainRendererRecord(action) || !isSafeRendererIdentifier(action.id)) {
+        throw new Error("Meeting profile quick action is invalid.");
+      }
+      return Object.freeze({
+        id: action.id,
+        label: requireRendererText(action.label, 80),
+        prompt: requireRendererText(action.prompt, ASSIST_QUESTION_MAX_CHARS)
+      });
+    })),
+    limitations: Object.freeze(value.limitations.map((item) => requireRendererText(item, 500)))
+  });
+}
+
+function sanitizeContextPack(value) {
+  if (!isPlainRendererRecord(value)
+    || typeof value.id !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.id)
+    || !Number.isSafeInteger(value.revision)
+    || value.revision <= 0
+    || !CONTEXT_PACK_KINDS.has(value.kind)) {
+    throw new Error("Meeting context pack is invalid.");
+  }
+  return Object.freeze({
+    id: value.id,
+    revision: value.revision,
+    kind: value.kind,
+    name: requireRendererText(value.name, 120),
+    content: requireRendererText(value.content, 32_000)
+  });
+}
+
+function requireRendererText(value, maxLength) {
+  if (typeof value !== "string"
+    || value.trim().length === 0
+    || value.length > maxLength
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+    throw new Error("Meeting assistance text is invalid.");
+  }
+  return value;
+}
+
+function isPlainRendererRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isSafeRendererIdentifier(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 64
+    && /^[a-z][a-z0-9_]*$/u.test(value);
+}
+
+function reconcileAssistSelection(previous, library) {
+  const catalog = library.profiles;
+  const requestedProfile = previous?.profile;
+  const profile = catalog.profiles.find((candidate) => (
+    candidate.id === requestedProfile?.profileId
+      && candidate.version === requestedProfile?.profileVersion
+  )) ?? catalog.profiles.find(({ id }) => id === catalog.defaultProfileId) ?? null;
+  if (!profile) return createDefaultAssistSelection();
+
+  const allowedKinds = new Set(profile.allowedContextKinds);
+  const requestedPackIds = new Set((previous?.contextPacks ?? []).map(({ id }) => id));
+  const contextPacks = library.contextPacks
+    .filter((pack) => requestedPackIds.has(pack.id) && allowedKinds.has(pack.kind))
+    .slice(0, CONTEXT_PACK_MAX_SELECTED)
+    .map((pack) => Object.freeze({ id: pack.id, revision: pack.revision }));
+  return Object.freeze({
+    profile: Object.freeze({ profileId: profile.id, profileVersion: profile.version }),
+    contextPacks: Object.freeze(contextPacks)
+  });
+}
+
+function getMeetingProfile(selection = state.active ? activeAssistSelection : assistSelection) {
+  const reference = selection?.profile;
+  return assistLibrary.profiles.profiles.find((profile) => (
+    profile.id === reference?.profileId && profile.version === reference?.profileVersion
+  )) ?? null;
+}
+
+function buildAssistSelectionForStart() {
+  const profile = getMeetingProfile(assistSelection);
+  if (!profile) throw new Error("Meeting profiles are unavailable. Restart the app and try again.");
+  const allowedKinds = new Set(profile.allowedContextKinds);
+  const byId = new Map(assistLibrary.contextPacks.map((pack) => [pack.id, pack]));
+  const contextPacks = assistSelection.contextPacks.map((reference) => {
+    const pack = byId.get(reference.id);
+    if (!pack || pack.revision !== reference.revision || !allowedKinds.has(pack.kind)) {
+      throw new Error("Selected private context changed. Review it before starting the meeting.");
+    }
+    return Object.freeze({ id: pack.id, revision: pack.revision });
+  });
+  return Object.freeze({
+    profile: Object.freeze({ profileId: profile.id, profileVersion: profile.version }),
+    contextPacks: Object.freeze(contextPacks)
+  });
+}
+
+function handleMeetingProfileChange() {
+  if (state.active) return;
+  const profile = assistLibrary.profiles.profiles.find(({ id }) => id === elements.meetingProfile.value);
+  if (!profile) return;
+  assistSelection = reconcileAssistSelection({
+    profile: { profileId: profile.id, profileVersion: profile.version },
+    contextPacks: assistSelection.contextPacks
+  }, assistLibrary);
+  renderMeetingContextSetup();
+  if (elements.contextPacksDialog.open) renderContextPacksDialog();
+  renderAssist();
+}
+
+function renderMeetingContextSetup() {
+  const profile = getMeetingProfile();
+  const locked = state.active;
+  const profiles = assistLibrary.profiles.profiles;
+  const expectedValues = profiles.map(({ id }) => id).join("\u0000");
+  const currentValues = [...elements.meetingProfile.options].map(({ value }) => value).join("\u0000");
+  if (expectedValues !== currentValues) {
+    elements.meetingProfile.replaceChildren(...profiles.map((candidate) => {
+      const option = document.createElement("option");
+      option.value = candidate.id;
+      option.textContent = candidate.name;
+      return option;
+    }));
+  }
+  if (profile) elements.meetingProfile.value = profile.id;
+  elements.meetingProfile.disabled = locked || profiles.length === 0;
+  elements.meetingProfileName.textContent = profile?.name ?? "Meeting profiles unavailable";
+  elements.meetingProfileDescription.textContent = profile?.description
+    ?? "Restart the app to reload the built-in meeting profiles.";
+  elements.meetingProfileLimitations.textContent = profile?.limitations.join(" • ")
+    ?? "No meeting profile is available.";
+
+  const selection = locked ? activeAssistSelection : assistSelection;
+  const selectedIds = new Set((selection?.contextPacks ?? []).map(({ id }) => id));
+  const selected = assistLibrary.contextPacks.filter(({ id }) => selectedIds.has(id));
+  elements.selectedContextPacks.textContent = selected.length === 0
+    ? "No context packs selected for this meeting."
+    : `${selected.length} selected · ${selected.map(({ name }) => name).join(", ")}`;
+  elements.manageContextPacks.disabled = locked;
+  elements.meetingContextLockNote.hidden = !locked;
+}
+
+function renderAssistQuickActions() {
+  const profile = getMeetingProfile();
+  const disabled = elements.assistQuestion.disabled || Boolean(assistOutput);
+  elements.assistQuickActions.replaceChildren(...(profile?.quickActions ?? []).map((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-action";
+    button.textContent = action.label;
+    button.disabled = disabled;
+    button.title = "Prefill the question. This does not send anything.";
+    button.addEventListener("click", () => {
+      elements.assistQuestion.value = action.prompt;
+      handleAssistQuestionInput();
+      elements.assistQuestion.focus();
+    });
+    return button;
+  }));
+}
+
+function openContextPacksDialog() {
+  if (state.active || elements.contextPacksDialog.open) return;
+  cancelContextPackEdit();
+  renderContextPacksDialog();
+  elements.contextPacksDialog.showModal();
+}
+
+function closeContextPacksDialog() {
+  cancelContextPackEdit();
+  if (elements.contextPacksDialog.open) elements.contextPacksDialog.close();
+}
+
+function renderContextPacksDialog() {
+  const profile = getMeetingProfile(assistSelection);
+  const allowedKinds = new Set(profile?.allowedContextKinds ?? []);
+  const selectedIds = new Set(assistSelection.contextPacks.map(({ id }) => id));
+  const locked = state.active || contextPackBusy;
+  const secure = assistLibrary.secureStorageAvailable;
+  const available = secure && assistLibrary.contextPacksAvailable;
+  elements.contextPackStorageWarning.hidden = available;
+  elements.contextPackStorageWarning.textContent = !secure
+    ? "Secure operating-system storage is unavailable. Private context cannot be created or loaded on this device."
+    : available
+      ? ""
+      : "Saved private context could not be loaded and was left untouched. Profiles and local transcription remain available, but pack changes are disabled.";
+  elements.contextPackListEmpty.hidden = !available || assistLibrary.contextPacks.length > 0;
+  elements.newContextPack.disabled = locked || !available;
+
+  elements.contextPackList.replaceChildren(...assistLibrary.contextPacks.map((pack) => {
+    const row = document.createElement("div");
+    row.className = "context-pack-row";
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedIds.has(pack.id);
+    const allowed = allowedKinds.has(pack.kind);
+    checkbox.disabled = locked
+      || !available
+      || !allowed
+      || (!checkbox.checked && selectedIds.size >= CONTEXT_PACK_MAX_SELECTED);
+    checkbox.setAttribute("aria-label", `Use ${pack.name} for the next meeting`);
+    checkbox.addEventListener("change", () => toggleContextPackSelection(pack, checkbox.checked));
+    const copy = document.createElement("span");
+    copy.className = "context-pack-row-copy";
+    const name = document.createElement("strong");
+    name.textContent = pack.name;
+    const meta = document.createElement("span");
+    meta.textContent = `${CONTEXT_KIND_LABELS[pack.kind]} · ${formatContextBytes(new TextEncoder().encode(pack.content).byteLength)}${allowed ? "" : ` · Not used by ${profile?.name ?? "this profile"}`}`;
+    copy.append(name, meta);
+    label.append(checkbox, copy);
+
+    const actions = document.createElement("div");
+    actions.className = "context-pack-row-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "assist-text-action";
+    edit.textContent = "Edit";
+    edit.disabled = locked || !available;
+    edit.addEventListener("click", () => beginContextPackEdit(pack));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "assist-text-action";
+    remove.textContent = "Delete";
+    remove.disabled = locked || !available;
+    remove.addEventListener("click", () => void deleteContextPack(pack));
+    actions.append(edit, remove);
+    row.append(label, actions);
+    return row;
+  }));
+}
+
+function toggleContextPackSelection(pack, selected) {
+  if (state.active || contextPackBusy) return;
+  const profile = getMeetingProfile(assistSelection);
+  if (!profile?.allowedContextKinds.includes(pack.kind)) return;
+  const current = assistSelection.contextPacks.filter(({ id }) => id !== pack.id);
+  if (selected) {
+    if (current.length >= CONTEXT_PACK_MAX_SELECTED) {
+      setContextPackFeedback("Select no more than twelve private context packs.", "error");
+      renderContextPacksDialog();
+      return;
+    }
+    current.push(Object.freeze({ id: pack.id, revision: pack.revision }));
+  }
+  assistSelection = Object.freeze({
+    profile: assistSelection.profile,
+    contextPacks: Object.freeze(current)
+  });
+  clearContextPackFeedback();
+  renderMeetingContextSetup();
+  renderContextPacksDialog();
+}
+
+function beginContextPackEdit(pack = null) {
+  if (state.active
+    || contextPackBusy
+    || !assistLibrary.secureStorageAvailable
+    || !assistLibrary.contextPacksAvailable) return;
+  elements.contextPackId.value = pack?.id ?? "";
+  elements.contextPackRevision.value = pack ? String(pack.revision) : "";
+  elements.contextPackKind.value = pack?.kind ?? "objective";
+  elements.contextPackName.value = pack?.name ?? "";
+  elements.contextPackContent.value = pack?.content ?? "";
+  elements.contextPackForm.hidden = false;
+  elements.contextPackSave.textContent = pack ? "Save changes" : "Save pack";
+  clearContextPackFeedback();
+  requestAnimationFrame(() => elements.contextPackName.focus());
+}
+
+function cancelContextPackEdit() {
+  elements.contextPackForm.hidden = true;
+  elements.contextPackForm.reset();
+  elements.contextPackId.value = "";
+  elements.contextPackRevision.value = "";
+  elements.contextPackSave.textContent = "Save pack";
+  clearContextPackFeedback();
+}
+
+async function saveContextPack() {
+  if (state.active
+    || contextPackBusy
+    || !assistLibrary.secureStorageAvailable
+    || !assistLibrary.contextPacksAvailable) return;
+  const kind = elements.contextPackKind.value;
+  const name = elements.contextPackName.value.trim();
+  const content = elements.contextPackContent.value;
+  if (!CONTEXT_PACK_KINDS.has(kind) || !name || content.trim().length === 0) {
+    setContextPackFeedback("Choose a category and enter both a name and local context.", "error");
+    return;
+  }
+  const id = elements.contextPackId.value;
+  const revision = Number(elements.contextPackRevision.value);
+  contextPackBusy = true;
+  renderContextPacksDialog();
+  elements.contextPackSave.disabled = true;
+  try {
+    const result = id
+      ? await bridge.updateContextPack({ id, revision, kind, name, content })
+      : await bridge.createContextPack({ kind, name, content });
+    if (!result?.ok) throw new Error(result?.error || "Meeting context could not be saved.");
+    applyAssistLibrary(result.library);
+    cancelContextPackEdit();
+  } catch (error) {
+    setContextPackFeedback(error?.message || "Meeting context could not be saved.", "error");
+  } finally {
+    contextPackBusy = false;
+    elements.contextPackSave.disabled = false;
+    renderContextPacksDialog();
+  }
+}
+
+async function deleteContextPack(pack) {
+  if (state.active
+    || contextPackBusy
+    || !assistLibrary.secureStorageAvailable
+    || !assistLibrary.contextPacksAvailable) return;
+  if (!window.confirm(`Delete “${pack.name}” from this device? This cannot be undone.`)) return;
+  contextPackBusy = true;
+  renderContextPacksDialog();
+  try {
+    const result = await bridge.deleteContextPack({ id: pack.id, revision: pack.revision });
+    if (!result?.ok) throw new Error(result?.error || "Meeting context could not be deleted.");
+    applyAssistLibrary(result.library);
+    if (elements.contextPackId.value === pack.id) cancelContextPackEdit();
+  } catch (error) {
+    setContextPackFeedback(error?.message || "Meeting context could not be deleted.", "error");
+  } finally {
+    contextPackBusy = false;
+    renderContextPacksDialog();
+  }
+}
+
+function setContextPackFeedback(message, tone = "status") {
+  elements.contextPackFeedback.textContent = message;
+  elements.contextPackFeedback.dataset.tone = tone;
+  elements.contextPackFeedback.setAttribute("role", tone === "error" ? "alert" : "status");
+  elements.contextPackFeedback.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+}
+
+function clearContextPackFeedback() {
+  setContextPackFeedback("", "status");
 }
 
 function applyPlatform(platform) {
@@ -406,14 +922,17 @@ async function startSession(generation) {
   const previousTranslationRuntimeState = translationRuntimeState;
   let transcriptReplaced = false;
   let assistSessionId = null;
+  let requestedAssistSelection = null;
   hideAlert();
   hideTranslationWarning();
   setTranslationRuntimeState(settings.translation === "en_to_pt_br" ? "on" : "off");
   frozenElapsedMs = 0;
-  renderSession();
-  updateSelectedSourceStates(selection, "idle", "Waiting for the local model");
 
   try {
+    requestedAssistSelection = buildAssistSelectionForStart();
+    activeAssistSelection = requestedAssistSelection;
+    renderSession();
+    updateSelectedSourceStates(selection, "idle", "Waiting for the local model");
     await speakerRefreshPromise;
     await autoSaveRefreshQueue.whenIdle();
     assertCurrentStart(generation);
@@ -422,7 +941,7 @@ async function startSession(generation) {
       language: settings.language,
       diarization: settings.diarization,
       translation: settings.translation
-    });
+    }, requestedAssistSelection);
     assertCurrentStart(generation);
     if (!startResult?.ok) throw new MeetingUiError("model_unavailable", startResult?.error);
     backendSessionStarted = true;
@@ -447,6 +966,7 @@ async function startSession(generation) {
     eventGate.clear();
     hideModelProgress();
     if (assistSessionId) endAssistMeeting(assistSessionId);
+    activeAssistSelection = null;
     if (transcriptReplaced) {
       transcript.restore(previousTranscript);
       announcedFinalIds.clear();
@@ -531,6 +1051,7 @@ async function performStop() {
   }
   eventGate.clear();
   if (assistEventGate.sessionId) endAssistMeeting(assistEventGate.sessionId);
+  activeAssistSelection = null;
 
   state.finishStop();
   const issue = pendingStopFailure ?? (stopError ? describeStartError(stopError) : null);
@@ -746,6 +1267,7 @@ function renderSession() {
     catalogReady: Boolean(modelCatalog)
   }));
   renderSettingsAvailability();
+  renderMeetingContextSetup();
   renderAssist();
 }
 
@@ -1593,7 +2115,19 @@ function sanitizeAssistStatus(value) {
     throw new Error("Meeting assistance status could not be checked.");
   }
   const provider = sanitizeAssistProvider(value.provider);
-  return Object.freeze({ sessionId, contextRevision, contextSummary, provider });
+  const sessionContext = sanitizeAssistSessionContextSummary(value.sessionContext);
+  const requestPreview = sanitizeAssistRequestPreview(value.requestPreview);
+  if (sessionId === null && (sessionContext !== null || requestPreview !== null)) {
+    throw new Error("Meeting assistance status could not be checked.");
+  }
+  return Object.freeze({
+    sessionId,
+    contextRevision,
+    contextSummary,
+    sessionContext,
+    requestPreview,
+    provider
+  });
 }
 
 function sanitizeAssistContextSummary(value) {
@@ -1660,6 +2194,95 @@ function sanitizeAssistDisclosure(value) {
   });
 }
 
+function sanitizeAssistSessionContextSummary(value) {
+  if (value === null || value === undefined) return null;
+  if (!isPlainRendererRecord(value)
+    || !isPlainRendererRecord(value.profile)
+    || !isSafeRendererIdentifier(value.profile.id)
+    || !Number.isSafeInteger(value.profile.version)
+    || value.profile.version <= 0
+    || !Array.isArray(value.contextPacks)
+    || value.contextPacks.length > CONTEXT_PACK_MAX_SELECTED) {
+    throw new Error("Meeting assistance context could not be checked.");
+  }
+  return Object.freeze({
+    profile: Object.freeze({
+      id: value.profile.id,
+      version: value.profile.version,
+      name: requireRendererText(value.profile.name, 120)
+    }),
+    contextPacks: Object.freeze(value.contextPacks.map((pack) => {
+      if (!isPlainRendererRecord(pack) || !CONTEXT_PACK_KINDS.has(pack.kind)) {
+        throw new Error("Meeting assistance context could not be checked.");
+      }
+      return Object.freeze({
+        kind: pack.kind,
+        name: requireRendererText(pack.name, 120),
+        bytes: normalizeAssistRevision(pack.bytes)
+      });
+    }))
+  });
+}
+
+function sanitizeAssistRequestPreview(value) {
+  if (value === null || value === undefined) return null;
+  if (!isPlainRendererRecord(value)) {
+    throw new Error("Meeting assistance request preview could not be checked.");
+  }
+  if (value.blocked === true) {
+    return Object.freeze({ blocked: true, reason: requireRendererText(value.reason, 500) });
+  }
+  if (!isPlainRendererRecord(value.transcript)
+    || !Array.isArray(value.contextPacks)
+    || value.contextPacks.length > CONTEXT_PACK_MAX_SELECTED) {
+    throw new Error("Meeting assistance request preview could not be checked.");
+  }
+  const profile = value.profile === null
+    ? null
+    : sanitizeAssistPreviewProfile(value.profile);
+  const contextPacks = value.contextPacks.map((pack) => {
+    if (!isPlainRendererRecord(pack) || !CONTEXT_PACK_KINDS.has(pack.category)) {
+      throw new Error("Meeting assistance request preview could not be checked.");
+    }
+    return Object.freeze({
+      category: pack.category,
+      name: requireRendererText(pack.name, 120),
+      bytes: normalizeAssistRevision(pack.bytes)
+    });
+  });
+  const startMs = value.transcript.startMs === null ? null : normalizeAssistRevision(value.transcript.startMs);
+  const endMs = value.transcript.endMs === null ? null : normalizeAssistRevision(value.transcript.endMs);
+  if ((startMs === null) !== (endMs === null) || (startMs !== null && endMs < startMs)) {
+    throw new Error("Meeting assistance request preview could not be checked.");
+  }
+  return Object.freeze({
+    blocked: false,
+    totalBytes: normalizeAssistRevision(value.totalBytes),
+    maxBytes: normalizeAssistRevision(value.maxBytes),
+    profile,
+    contextPacks: Object.freeze(contextPacks),
+    transcript: Object.freeze({
+      segmentCount: normalizeAssistRevision(value.transcript.segmentCount),
+      bytes: normalizeAssistRevision(value.transcript.bytes),
+      startMs,
+      endMs
+    })
+  });
+}
+
+function sanitizeAssistPreviewProfile(value) {
+  if (!isPlainRendererRecord(value)
+    || !Number.isSafeInteger(value.version)
+    || value.version <= 0) {
+    throw new Error("Meeting assistance request preview could not be checked.");
+  }
+  return Object.freeze({
+    name: requireRendererText(value.name, 120),
+    version: value.version,
+    bytes: normalizeAssistRevision(value.bytes)
+  });
+}
+
 function renderAssist() {
   const sessionId = assistStatus?.sessionId ?? assistEventGate.sessionId;
   const contextSummary = assistStatus?.contextSummary ?? null;
@@ -1697,12 +2320,33 @@ function renderAssist() {
     || Boolean(assistRequestAttempt?.canceled && !assistRequestAttempt.dispatched);
   elements.assistDismiss.hidden = inFlight;
   elements.assistProgress.hidden = !inFlight;
+  renderAssistQuickActions();
+  renderAssistRequestPreview(assistStatus?.requestPreview, assistStatus?.sessionContext, contextSummary);
 
   renderAssistStateBadge(provider, hasContext, inFlight);
   renderAssistProviderAvailability(provider);
   renderAssistDisclosure(disclosure);
   renderAssistMessage();
   renderAssistResult();
+}
+
+function renderAssistRequestPreview(preview, sessionContext, contextSummary) {
+  if (preview?.blocked) {
+    elements.assistRequestPreview.textContent = `Cannot send: ${preview.reason}`;
+    elements.assistRequestPreview.dataset.tone = "error";
+    return;
+  }
+  elements.assistRequestPreview.dataset.tone = "";
+  if (!preview) {
+    elements.assistRequestPreview.textContent = contextSummary
+      ? "Preparing an exact request-size preview. Nothing has been sent."
+      : "A request preview will appear after finalized transcript text is available.";
+    return;
+  }
+  const profileName = preview.profile?.name ?? sessionContext?.profile?.name ?? "General";
+  const packCount = preview.contextPacks.length;
+  const segmentCount = preview.transcript.segmentCount;
+  elements.assistRequestPreview.textContent = `Will send the ${profileName} profile, ${packCount} private ${packCount === 1 ? "pack" : "packs"}, and ${segmentCount} finalized ${segmentCount === 1 ? "segment" : "segments"} (${formatContextBytes(preview.totalBytes)} total) only when you choose Send.`;
 }
 
 function renderAssistStateBadge(provider, hasContext, inFlight) {
@@ -1836,6 +2480,7 @@ function canSendAssistRequest({ currentAttempt = null } = {}) {
     && !assistCancelPending
     && assistOutput?.phase !== "streaming"
     && !assistStatus.provider.inFlight
+    && assistStatus.requestPreview?.blocked !== true
     && !deliveryBlocked
     && !assistOutput
   );
@@ -1938,7 +2583,9 @@ function sanitizeAssistContext(value) {
     sessionId,
     revision,
     transcriptChars,
-    segments: Object.freeze(segments)
+    segments: Object.freeze(segments),
+    sessionContext: sanitizeAssistSessionContextSummary(value.sessionContext),
+    requestPreview: sanitizeAssistRequestPreview(value.requestPreview)
   });
 }
 
@@ -1983,6 +2630,28 @@ function renderAssistContextDialog(context) {
     : "No finalized transcript context is available.";
   elements.assistContextDialogEmpty.hidden = context.segments.length > 0;
   elements.assistContextUse.disabled = context.segments.length === 0;
+  const sessionContext = context.sessionContext;
+  const privateSummary = [];
+  if (sessionContext?.profile) {
+    const profile = document.createElement("div");
+    profile.textContent = `Meeting profile: ${sessionContext.profile.name} (version ${sessionContext.profile.version})`;
+    privateSummary.push(profile);
+  }
+  if (sessionContext?.contextPacks.length) {
+    const packs = document.createElement("div");
+    packs.textContent = `Private context selected: ${sessionContext.contextPacks.map((pack) => `${pack.name} (${CONTEXT_KIND_LABELS[pack.kind]}, ${formatContextBytes(pack.bytes)})`).join(", ")}. Contents stay hidden in this summary.`;
+    privateSummary.push(packs);
+  } else {
+    const packs = document.createElement("div");
+    packs.textContent = "Private context selected: none.";
+    privateSummary.push(packs);
+  }
+  if (context.requestPreview?.blocked) {
+    const blocked = document.createElement("div");
+    blocked.textContent = `Request blocked: ${context.requestPreview.reason}`;
+    privateSummary.push(blocked);
+  }
+  elements.assistContextPrivateSummary.replaceChildren(...privateSummary);
   elements.assistContextList.replaceChildren(...context.segments.map((segment) => {
     const item = document.createElement("li");
     const meta = document.createElement("span");
@@ -2328,6 +2997,7 @@ function describeAssistSendBlocker() {
     && assistDeliveryBlockedContext.contextRevision === assistStatus.contextRevision) {
     return "Wait for new finalized transcript text or restart the meeting before requesting assistance again.";
   }
+  if (assistStatus.requestPreview?.blocked) return assistStatus.requestPreview.reason;
   if (!assistConsentChecked) return "Review the disclosure and confirm consent for this meeting.";
   return "The assistance request is not ready yet. Review the question and try again.";
 }
@@ -2349,6 +3019,12 @@ function summarizeAssistContextSnapshot(context) {
 function formatAssistSnapshotSpeaker(segment) {
   if (segment.track === "microphone") return "You";
   return segment.speaker_id || "Meeting audio";
+}
+
+function formatContextBytes(bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return "Unknown size";
+  if (bytes < 1_000) return `${bytes} B`;
+  return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0).replace(/\.0$/, "")} KB`;
 }
 
 function appendAssistSuggestion(current, next) {

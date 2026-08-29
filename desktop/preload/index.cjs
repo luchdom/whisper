@@ -10,7 +10,7 @@ const TRAY_ACTIONS = new Set(["focus-start", "stop"]);
 const PROVIDER_LINKS = new Set(["privacy", "data-controls", "usage"]);
 
 contextBridge.exposeInMainWorld("meeting", Object.freeze({
-  start: (options) => ipcRenderer.invoke("meeting:start", options),
+  start: (options, assistSelection) => ipcRenderer.invoke("meeting:start", options, assistSelection),
   sendAudio: ({ track, startMs, endMs, pcm }) => {
     const bytes = pcm instanceof Uint8Array ? pcm : new Uint8Array(pcm);
     const isolated = bytes.slice();
@@ -32,6 +32,19 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   openProviderLink: (linkId) => PROVIDER_LINKS.has(linkId)
     ? ipcRenderer.invoke("meeting:provider-open-link", linkId)
     : Promise.resolve({ ok: false, error: "Invalid provider link." }),
+  getAssistLibrary: () => ipcRenderer.invoke("meeting:assist-library"),
+  createContextPack: ({ kind, name, content }) => ipcRenderer.invoke(
+    "meeting:context-pack-create",
+    { kind, name, content }
+  ),
+  updateContextPack: ({ id, revision, kind, name, content }) => ipcRenderer.invoke(
+    "meeting:context-pack-update",
+    { id, revision, kind, name, content }
+  ),
+  deleteContextPack: ({ id, revision }) => ipcRenderer.invoke(
+    "meeting:context-pack-delete",
+    { id, revision }
+  ),
   getAssistStatus: () => ipcRenderer.invoke("meeting:assist-status"),
   getAssistContext: () => ipcRenderer.invoke("meeting:assist-context"),
   setAssistConsent: (enabled) => ipcRenderer.invoke("meeting:assist-consent", enabled === true),

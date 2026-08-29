@@ -47,8 +47,12 @@ test("the rendered product is English and exposes the functional model, language
   assert.match(html, /These options never start audio capture\./);
   assert.match(html, /id="model-progress"[^>]*aria-live="polite"[^>]*hidden/);
   assert.match(html, /<progress id="model-progress-bar" max="1" aria-labelledby="model-progress-label"><\/progress>/);
+  const languageSelect = html.slice(
+    html.indexOf('id="language-select"'),
+    html.indexOf('</select>', html.indexOf('id="language-select"'))
+  );
   assert.deepEqual(
-    [...html.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
+    [...languageSelect.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
     ["auto", "en", "pt"]
   );
   assert.doesNotMatch(html, /<option value="(?:tiny|base|small|medium|turbo|large-v3)/);
@@ -138,7 +142,7 @@ test("AI provider settings are overt, lazy, encrypted, and renderer-bounded", as
   assert.match(app, /setAttribute\("role", tone === "error" \? "alert" : "status"\)/);
   assert.match(app, /setAttribute\("aria-live", tone === "error" \? "assertive" : "polite"\)/);
   assert.match(app, /providerDisclosureSummary\.textContent = providerStatus\.disclosure\.summary/);
-  assert.match(policy, /Selecting OpenAI or importing a key sends nothing\./);
+  assert.match(policy, /Selecting OpenAI, choosing a meeting profile, editing private context, or importing a key sends nothing\./);
   assert.match(policy, /API key stays out of the renderer and context pack/);
   assert.match(policy, /main process uses it only to authenticate (?:this|that explicit) OpenAI HTTPS request/);
 

@@ -30,9 +30,9 @@ test("provider policy defaults to Off and represents the future local mode as un
 });
 
 test("provider disclosure and external navigation use fixed main-owned values", () => {
-  assert.match(PROVIDER_DISCLOSURE.summary, /Selecting OpenAI or importing a key sends nothing\./);
-  assert.match(PROVIDER_DISCLOSURE.summary, /question.*finalized transcript text.*anonymous speaker labels and timestamps/i);
-  assert.match(PROVIDER_DISCLOSURE.summary, /Audio and draft transcript text are never sent\./);
+  assert.match(PROVIDER_DISCLOSURE.summary, /Selecting OpenAI, choosing a meeting profile, editing private context, or importing a key sends nothing\./);
+  assert.match(PROVIDER_DISCLOSURE.summary, /question.*shown built-in profile.*private context packs.*finalized transcript text.*anonymous speaker labels and timestamps/i);
+  assert.match(PROVIDER_DISCLOSURE.summary, /Audio, draft transcript text, translations, unselected packs, and manual speaker names are never sent\./);
   assert.match(PROVIDER_DISCLOSURE.summary, /API key stays out of the renderer and context pack.*authenticate this OpenAI HTTPS request/i);
   assert.deepEqual(PROVIDER_DISCLOSURE.links.map(({ id }) => id), [
     "privacy",

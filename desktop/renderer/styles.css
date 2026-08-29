@@ -185,10 +185,90 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(120px, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(120px, 1fr) auto;
   gap: 12px;
   min-height: 0;
   padding: 16px 24px 20px;
+}
+
+.meeting-context-bar {
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(220px, 1fr) minmax(250px, 360px);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.meeting-profile-field,
+.meeting-profile-summary,
+.context-pack-summary {
+  min-width: 0;
+}
+
+.meeting-profile-field {
+  display: grid;
+  gap: 5px;
+}
+
+.meeting-profile-field label,
+.context-pack-summary strong,
+.meeting-profile-summary strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.meeting-profile-field select {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 30px 0 9px;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.meeting-profile-summary p,
+.context-pack-summary p,
+.meeting-context-lock-note,
+.context-packs-section-heading p,
+.context-pack-form p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.profile-limitations {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-pack-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.context-pack-summary > div {
+  min-width: 0;
+}
+
+.context-pack-summary p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-context-lock-note {
+  grid-column: 1 / -1;
+  color: var(--warning);
 }
 
 .setup-panel {
@@ -417,7 +497,7 @@ h2 {
 }
 
 .notice-stack {
-  grid-row: 2;
+  grid-row: 3;
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -445,7 +525,7 @@ h2 {
 }
 
 .transcript-panel {
-  grid-row: 3;
+  grid-row: 4;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
@@ -457,7 +537,7 @@ h2 {
 }
 
 .assist-panel {
-  grid-row: 4;
+  grid-row: 5;
   display: grid;
   gap: 12px;
   max-height: min(42vh, 420px);
@@ -468,6 +548,34 @@ h2 {
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.assist-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.assist-request-preview {
+  font-weight: 600;
+}
+
+.assist-request-preview[data-tone="error"] {
+  color: var(--danger);
+}
+
+.assist-context-private-summary {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.assist-context-private-summary > div {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  font-size: 11px;
 }
 
 .assist-header,
@@ -1115,6 +1223,139 @@ dialog::backdrop {
   display: grid;
 }
 
+.context-packs-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-width: 760px;
+  max-height: min(780px, calc(100vh - 32px));
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.context-packs-dialog-content {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(780px, calc(100vh - 32px));
+}
+
+.context-packs-dialog-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.context-packs-dialog-body:has(.context-pack-form[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.context-packs-section-heading,
+.context-pack-form-actions,
+.context-pack-row,
+.context-pack-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.context-pack-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.context-pack-row {
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+}
+
+.context-pack-row label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.context-pack-row input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.context-pack-row-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.context-pack-row-copy strong,
+.context-pack-row-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-pack-row-copy span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.context-pack-row-actions {
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.context-pack-row-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.context-pack-empty {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.context-pack-form {
+  display: grid;
+  align-content: start;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.context-pack-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.context-pack-form input,
+.context-pack-form select,
+.context-pack-form textarea {
+  width: 100%;
+  padding: 8px 9px;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  font-weight: 400;
+  resize: vertical;
+}
+
 .settings-dialog-header,
 .settings-dialog-footer {
   display: flex;
@@ -1457,6 +1698,18 @@ dialog::backdrop {
   .source-area,
   .engine-area {
     padding: 10px;
+  }
+
+  .meeting-context-bar {
+    grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
+  }
+
+  .context-pack-summary {
+    grid-column: 1 / -1;
+  }
+
+  .context-packs-dialog-body {
+    grid-template-columns: 1fr;
   }
 
   .section-heading p,

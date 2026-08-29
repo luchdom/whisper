@@ -53,9 +53,18 @@ import { createOpenAIProvider } from "./openai-provider.js";
 import { createFakeAssistProvider } from "./fake-assist-provider.js";
 import { ProviderController } from "./provider-controller.js";
 import { createProviderCredentialStore } from "./provider-credential-store.js";
+import { createContextPackStore } from "./context-pack-store.js";
+import {
+  DEFAULT_MEETING_PROFILE_ID,
+  getMeetingProfile,
+  getMeetingProfileCatalogDto,
+  normalizeMeetingProfileSelection
+} from "./meeting-profiles.js";
 import {
   PROVIDER_DISCLOSURE,
   PROVIDER_DISCLOSURE_VERSION,
+  buildProviderContextPreview,
+  createAssistSessionContext,
   resolveProviderExternalLink
 } from "./provider-policy.js";
 
@@ -129,6 +138,7 @@ let startupService = null;
 let trayController = null;
 let providerController = null;
 let assistController = null;
+let contextPackStore = null;
 let fakeAssistConsent = null;
 let desktopBootstrapReady = false;
 let pendingWindowShow = null;
@@ -306,6 +316,15 @@ function createProviderBoundary() {
   });
 }
 
+function createAssistLibraryBoundary() {
+  contextPackStore = createContextPackStore({
+    contextPackPath: path.join(app.getPath("userData"), "meeting-context-packs.json"),
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plaintext) => safeStorage.encryptString(plaintext),
+    decrypt: (ciphertext) => safeStorage.decryptString(ciphertext)
+  });
+}
+
 function createAssistBoundary() {
   const provider = isDevelopmentFakeAssistEnabled()
     ? createFakeAssistProvider()
@@ -318,7 +337,7 @@ function isDevelopmentFakeAssistEnabled() {
   return !app.isPackaged && process.env.MEETING_TRANSCRIBER_FAKE_ASSIST === "1";
 }
 
-function startAssistSession(sessionId) {
+function startAssistSession(sessionId, sessionContext = null) {
   fakeAssistConsent = null;
   try {
     providerController?.startSession(sessionId);
@@ -326,7 +345,7 @@ function startAssistSession(sessionId) {
     providerController = null;
   }
   try {
-    assistController?.startSession(sessionId);
+    assistController?.startSession(sessionId, sessionContext);
   } catch {
     assistController = null;
   }
@@ -442,9 +461,14 @@ function configureMediaCapture() {
 }
 
 function registerIpc() {
-  ipcMain.handle("meeting:start", async (event, options) => {
+  ipcMain.handle("meeting:start", async (event, options, assistSelection, ...args) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     try {
+      if (args.length !== 0) {
+        throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
+          code: "invalid_context_selection"
+        });
+      }
       if (meetingInProgress) throw new Error("A transcription session is already active.");
       if (!modelCatalog) return modelCatalogUnavailableResult();
       const setup = await backendSetup.check();
@@ -454,20 +478,32 @@ function registerIpc() {
           error: "The local engine is not ready. Open Settings, complete the suggested setup, and check again."
         };
       }
+      const sessionContext = await resolveAssistSelection(assistSelection);
       trayController?.setState("preparing");
       const engine = await backend.startSession(createBackendStartOptions(options, {
         userDataPath: app.getPath("userData"),
         catalog: modelCatalog
       }));
       meetingInProgress = true;
-      startAssistSession(engine.session_id);
+      startAssistSession(engine.session_id, sessionContext);
       successfulStop = false;
       lastSessionStopReason = null;
       transcriptFiles.resetCurrentAutoSavePath();
       return { ok: true, engine };
     } catch (error) {
       trayController?.setState("error");
-      return { ok: false, error: publicError(error, "The local transcription engine could not start.") };
+      const contextError = typeof error?.code === "string"
+        && (error.code.startsWith("context_pack_")
+          || error.code.startsWith("meeting_profile_")
+          || error.code === "invalid_meeting_profile"
+          || error.code === "invalid_context_selection"
+          || error.code === "invalid_context");
+      return {
+        ok: false,
+        error: contextError
+          ? contextPackPublicError(error)
+          : publicError(error, "The local transcription engine could not start.")
+      };
     }
   });
 
@@ -729,6 +765,55 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle("meeting:assist-library", async (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    try {
+      return { ok: true, library: await getRendererAssistLibrary() };
+    } catch (error) {
+      return { ok: false, error: contextPackPublicError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:context-pack-create", async (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    if (settingsAreLocked()) return settingsLockedResult();
+    try {
+      if (!contextPackStore) throw Object.assign(new Error(), { code: "secure_storage_unavailable" });
+      await contextPackStore.create(value);
+      return { ok: true, library: await getRendererAssistLibrary() };
+    } catch (error) {
+      return { ok: false, error: contextPackPublicError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:context-pack-update", async (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    if (settingsAreLocked()) return settingsLockedResult();
+    try {
+      if (!contextPackStore) throw Object.assign(new Error(), { code: "secure_storage_unavailable" });
+      await contextPackStore.update(value);
+      return { ok: true, library: await getRendererAssistLibrary() };
+    } catch (error) {
+      return { ok: false, error: contextPackPublicError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:context-pack-delete", async (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    if (settingsAreLocked()) return settingsLockedResult();
+    try {
+      if (!contextPackStore) throw Object.assign(new Error(), { code: "secure_storage_unavailable" });
+      await contextPackStore.delete(value);
+      return { ok: true, library: await getRendererAssistLibrary() };
+    } catch (error) {
+      return { ok: false, error: contextPackPublicError(error) };
+    }
+  });
+
   ipcMain.handle("meeting:assist-status", async (event, ...args) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     if (args.length !== 0) return invalidAssistRequestResult();
@@ -742,7 +827,10 @@ function registerIpc() {
   ipcMain.handle("meeting:assist-context", (event, ...args) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     if (args.length !== 0) return invalidAssistRequestResult();
-    return { ok: true, context: assistController?.freezeContextForRequest() ?? null };
+    return {
+      ok: true,
+      context: buildRendererAssistContext(assistController?.freezeContextForRequest() ?? null)
+    };
   });
 
   ipcMain.handle("meeting:assist-consent", async (event, enabled, ...args) => {
@@ -909,6 +997,7 @@ async function getRendererAssistStatus() {
   // assembles one coherent session/revision/provider DTO without a transition
   // interleaving between the snapshot and return value.
   const snapshot = assistController?.getContextSnapshot() ?? null;
+  const requestSnapshot = assistController?.getRequestContextSnapshot() ?? null;
   const provider = fakeAssistEnabled
     ? {
         mode: "openai",
@@ -935,6 +1024,8 @@ async function getRendererAssistStatus() {
     sessionId: snapshot?.sessionId ?? null,
     contextRevision: snapshot?.revision ?? 0,
     contextSummary: buildAssistContextSummary(snapshot),
+    sessionContext: assistController?.getSessionContextSummary() ?? null,
+    requestPreview: buildRendererRequestPreview(requestSnapshot),
     provider
   };
 }
@@ -947,6 +1038,121 @@ function buildAssistContextSummary(snapshot) {
     startMs: snapshot.segments[0]?.start_ms ?? null,
     endMs: snapshot.segments.at(-1)?.end_ms ?? null
   });
+}
+
+function buildRendererRequestPreview(snapshot) {
+  if (!snapshot) return null;
+  try {
+    return buildProviderContextPreview(snapshot);
+  } catch (error) {
+    if (error?.code === "provider_context_too_large") {
+      return Object.freeze({ blocked: true, reason: "The selected meeting context is too large to send safely." });
+    }
+    return Object.freeze({ blocked: true, reason: "The selected meeting context could not be prepared." });
+  }
+}
+
+function buildRendererAssistContext(snapshot) {
+  if (!snapshot) return null;
+  return Object.freeze({
+    sessionId: snapshot.sessionId,
+    revision: snapshot.revision,
+    transcriptChars: snapshot.transcriptChars,
+    segments: snapshot.segments,
+    sessionContext: assistController?.getSessionContextSummary() ?? null,
+    requestPreview: buildRendererRequestPreview(snapshot)
+  });
+}
+
+async function getRendererAssistLibrary() {
+  const profiles = getMeetingProfileCatalogDto();
+  if (!contextPackStore) {
+    return Object.freeze({
+      profiles,
+      secureStorageAvailable: false,
+      contextPacksAvailable: false,
+      contextPacks: Object.freeze([])
+    });
+  }
+  const secureStorageAvailable = await contextPackStore.encryptionAvailable();
+  if (!secureStorageAvailable) {
+    return Object.freeze({
+      profiles,
+      secureStorageAvailable: false,
+      contextPacksAvailable: false,
+      contextPacks: Object.freeze([])
+    });
+  }
+  try {
+    return Object.freeze({
+      profiles,
+      secureStorageAvailable: true,
+      contextPacksAvailable: true,
+      contextPacks: await contextPackStore.list()
+    });
+  } catch {
+    // Private context is optional. Keep the immutable profile catalog and local
+    // transcription usable, while leaving the unreadable store untouched and
+    // disabling every pack mutation in the renderer.
+    return Object.freeze({
+      profiles,
+      secureStorageAvailable: true,
+      contextPacksAvailable: false,
+      contextPacks: Object.freeze([])
+    });
+  }
+}
+
+async function resolveAssistSelection(value) {
+  const input = value ?? {
+    profile: { profileId: DEFAULT_MEETING_PROFILE_ID, profileVersion: 1 },
+    contextPacks: []
+  };
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
+      code: "invalid_context_selection"
+    });
+  }
+  const keys = Object.keys(input).sort();
+  if (keys.length !== 2 || keys[0] !== "contextPacks" || keys[1] !== "profile") {
+    throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
+      code: "invalid_context_selection"
+    });
+  }
+  const selection = normalizeMeetingProfileSelection(input.profile);
+  if (!Array.isArray(input.contextPacks)) {
+    throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
+      code: "invalid_context_selection"
+    });
+  }
+  const profile = getMeetingProfile(selection.profileId, selection.profileVersion);
+  const contextPacks = input.contextPacks.length === 0
+    ? Object.freeze([])
+    : await contextPackStore?.resolveSelection(input.contextPacks);
+  if (!contextPacks) {
+    throw new Error("Secure meeting-context storage is unavailable on this computer.");
+  }
+  return createAssistSessionContext({ profile, contextPacks });
+}
+
+function contextPackPublicError(error) {
+  const messages = new Map([
+    ["invalid_meeting_profile", "The selected meeting profile is invalid."],
+    ["meeting_profile_not_found", "The selected meeting profile is unavailable."],
+    ["meeting_profile_version_mismatch", "The selected meeting profile version is unavailable."],
+    ["secure_storage_unavailable", "Secure meeting-context storage is unavailable on this computer."],
+    ["invalid_context_pack", "The meeting context pack is invalid."],
+    ["invalid_context_selection", "The selected meeting context is invalid."],
+    ["context_pack_limit_exceeded", "Saved meeting context exceeds the local storage limit."],
+    ["context_pack_not_found", "The selected meeting context pack no longer exists."],
+    ["context_pack_revision_conflict", "The meeting context pack changed. Review the latest version before continuing."],
+    ["context_pack_corrupt", "Saved meeting context is invalid and was not changed."],
+    ["context_pack_decryption_failed", "Saved meeting context could not be unlocked."],
+    ["context_pack_read_failed", "Saved meeting context could not be read."],
+    ["context_pack_write_failed", "Meeting context could not be stored securely."],
+    ["context_pack_encryption_failed", "Meeting context could not be encrypted."]
+  ]);
+  return messages.get(error?.code) ?? "Meeting context could not be changed.";
 }
 
 function isTrustedRendererFrame(frame) {
@@ -1079,6 +1285,13 @@ if (!hasSingleInstanceLock) {
       } catch {
         settings = { ...DEFAULT_SETTINGS };
       }
+    }
+    try {
+      createAssistLibraryBoundary();
+    } catch {
+      // Private context is optional. The renderer reports secure storage as
+      // unavailable while transcription and profile-only assistance continue.
+      contextPackStore = null;
     }
     try {
       createProviderBoundary();

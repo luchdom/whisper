@@ -99,6 +99,26 @@
           >Start transcription</button>
         </section>
 
+        <section class="meeting-context-bar" aria-labelledby="meeting-profile-heading">
+          <div class="meeting-profile-field">
+            <label for="meeting-profile-select" id="meeting-profile-heading">Meeting profile</label>
+            <select id="meeting-profile-select" aria-describedby="meeting-profile-description meeting-profile-limitations"></select>
+          </div>
+          <div class="meeting-profile-summary">
+            <strong id="meeting-profile-name">General</strong>
+            <p id="meeting-profile-description">Concise help for a broad range of meetings.</p>
+            <p id="meeting-profile-limitations" class="profile-limitations">Suggestions should be adapted and verified before you use them.</p>
+          </div>
+          <div class="context-pack-summary">
+            <div>
+              <strong>Private context</strong>
+              <p id="selected-context-packs">No context packs selected for the next meeting.</p>
+            </div>
+            <button id="manage-context-packs" class="secondary-action" type="button">Manage…</button>
+          </div>
+          <p id="meeting-context-lock-note" class="meeting-context-lock-note" hidden>Profile and private context are frozen for this meeting. Stop before changing them.</p>
+        </section>
+
         <div class="notice-stack">
           <div id="app-alert" class="app-alert" role="status" aria-live="polite" hidden></div>
           <div id="translation-warning" class="app-alert" data-tone="warning" role="status" aria-live="polite" hidden></div>
@@ -157,6 +177,8 @@
               <button id="review-assist-context" class="secondary-action" type="button">Review context</button>
             </section>
 
+            <div id="assist-quick-actions" class="assist-quick-actions" aria-label="Suggested question starters"></div>
+
             <div id="assist-provider-availability" class="assist-provider-availability" role="status" aria-live="polite" aria-atomic="true" hidden>
               <p id="assist-provider-message"></p>
               <button id="open-assist-settings" class="secondary-action" type="button">Open Settings</button>
@@ -182,6 +204,7 @@
               <div>
                 <h3 id="assist-consent-heading">Send this context to OpenAI?</h3>
                 <p id="assist-disclosure">Provider disclosure is loading.</p>
+                <p id="assist-request-preview" class="assist-request-preview">Request context preview is loading.</p>
               </div>
               <label class="assist-consent-row" for="assist-consent">
                 <input id="assist-consent" type="checkbox" aria-describedby="assist-disclosure assist-policy-version">
@@ -240,12 +263,73 @@
         </header>
         <div class="assist-context-dialog-body">
           <p id="assist-context-dialog-summary" class="assist-context-dialog-summary"></p>
+          <div id="assist-context-private-summary" class="assist-context-private-summary"></div>
           <ol id="assist-context-list" class="assist-context-list"></ol>
           <p id="assist-context-dialog-empty" class="assist-context-dialog-empty" hidden>No finalized transcript context is available.</p>
         </div>
         <footer class="settings-dialog-footer">
           <button id="back-assist-context" class="secondary-action" type="button">Back</button>
           <button id="use-assist-context" class="primary-dialog-action" type="button">Return to question</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="context-packs-dialog" class="context-packs-dialog" aria-labelledby="context-packs-title" aria-describedby="context-packs-description">
+      <div class="context-packs-dialog-content">
+        <header class="settings-dialog-header">
+          <div>
+            <h2 id="context-packs-title">Private meeting context</h2>
+            <p id="context-packs-description">Create local text packs and explicitly choose which ones join the next meeting. Nothing is uploaded while you edit or select them.</p>
+          </div>
+          <button id="close-context-packs-top" class="secondary-action dialog-close" type="button" aria-label="Close private meeting context">Close</button>
+        </header>
+        <div class="context-packs-dialog-body">
+          <section aria-labelledby="saved-context-packs-heading">
+            <div class="context-packs-section-heading">
+              <div>
+                <h3 id="saved-context-packs-heading">Saved on this device</h3>
+                <p>Select up to twelve exact packs for the next meeting.</p>
+              </div>
+              <button id="new-context-pack" class="secondary-action" type="button">New pack</button>
+            </div>
+            <div id="context-pack-storage-warning" class="assist-message" data-tone="warning" role="status" hidden></div>
+            <div id="context-pack-list" class="context-pack-list"></div>
+            <p id="context-pack-list-empty" class="context-pack-empty">No private context packs saved yet.</p>
+          </section>
+
+          <form id="context-pack-form" class="context-pack-form" hidden>
+            <input id="context-pack-id" type="hidden">
+            <input id="context-pack-revision" type="hidden">
+            <label for="context-pack-kind">
+              <span>Category</span>
+              <select id="context-pack-kind" required>
+                <option value="objective">Meeting objective</option>
+                <option value="talking_points">Talking points</option>
+                <option value="job_description">Role or job description</option>
+                <option value="resume">Resume or experience</option>
+                <option value="product_facts">Product facts</option>
+                <option value="presentation_notes">Presentation notes</option>
+                <option value="custom_notes">Custom notes</option>
+              </select>
+            </label>
+            <label for="context-pack-name">
+              <span>Name</span>
+              <input id="context-pack-name" type="text" maxlength="120" required placeholder="For example: Q3 product facts">
+            </label>
+            <label for="context-pack-content">
+              <span>Local text or Markdown</span>
+              <textarea id="context-pack-content" rows="8" maxlength="32000" required placeholder="Add only the context you want available to this meeting profile."></textarea>
+            </label>
+            <p>Private context is encrypted with this operating system. Selected content is sent only after the separate per-meeting provider disclosure and explicit Send.</p>
+            <p id="context-pack-feedback" class="provider-feedback" role="status" aria-live="polite"></p>
+            <div class="context-pack-form-actions">
+              <button id="cancel-context-pack-edit" class="secondary-action" type="button">Cancel</button>
+              <button id="save-context-pack" class="primary-dialog-action" type="submit">Save pack</button>
+            </div>
+          </form>
+        </div>
+        <footer class="settings-dialog-footer">
+          <button id="close-context-packs" class="primary-dialog-action" type="button">Done</button>
         </footer>
       </div>
     </dialog>

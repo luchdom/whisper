@@ -1,6 +1,6 @@
 {
   "name": "meeting-transcriber-desktop",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Local-first real-time meeting transcription desktop client",
   "author": "Luchdom",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test desktop/test/*.test.js",
-    "check": "node --check desktop/main/index.js && node --check desktop/main/backend-controller.js && node --check desktop/main/backend-setup.js && node --check desktop/main/model-catalog.js && node --check desktop/main/protocol.js && node --check desktop/main/desktop-policy.js && node --check desktop/main/settings-store.js && node --check desktop/main/startup-service.js && node --check desktop/main/tray-controller.js && node --check desktop/main/transcript-file-service.js && node --check desktop/main/provider-policy.js && node --check desktop/main/provider-credential-store.js && node --check desktop/main/openai-provider.js && node --check desktop/main/provider-controller.js && node --check desktop/main/assist-context.js && node --check desktop/main/assist-protocol.js && node --check desktop/main/assist-provider-adapter.js && node --check desktop/main/fake-assist-provider.js && node --check desktop/main/assist-controller.js && node --check desktop/renderer/lib/assist-request-gate.js && node --check desktop/renderer/app.js && node --check desktop/renderer/capture-controller.js && node --check desktop/preload/index.cjs",
+    "check": "node --check desktop/main/index.js && node --check desktop/main/backend-controller.js && node --check desktop/main/backend-setup.js && node --check desktop/main/model-catalog.js && node --check desktop/main/protocol.js && node --check desktop/main/desktop-policy.js && node --check desktop/main/settings-store.js && node --check desktop/main/startup-service.js && node --check desktop/main/tray-controller.js && node --check desktop/main/transcript-file-service.js && node --check desktop/main/provider-policy.js && node --check desktop/main/provider-credential-store.js && node --check desktop/main/openai-provider.js && node --check desktop/main/provider-controller.js && node --check desktop/main/assist-context.js && node --check desktop/main/assist-protocol.js && node --check desktop/main/assist-provider-adapter.js && node --check desktop/main/fake-assist-provider.js && node --check desktop/main/assist-controller.js && node --check desktop/main/meeting-profiles.js && node --check desktop/main/context-pack-store.js && node --check desktop/renderer/lib/assist-request-gate.js && node --check desktop/renderer/app.js && node --check desktop/renderer/capture-controller.js && node --check desktop/preload/index.cjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

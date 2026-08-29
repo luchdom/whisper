@@ -9,9 +9,12 @@ import {
   normalizeRendererAssistRequest,
   sanitizeAssistError
 } from "./assist-protocol.js";
+import { normalizeAssistSessionContext } from "./provider-policy.js";
 
 export const ASSIST_PROVIDER_POLICY = Object.freeze({
   transcriptIsUntrustedInput: true,
+  contextPacksAreUntrustedInput: true,
+  profileIsAppOwnedPreference: true,
   toolsAllowed: false,
   externalActionsAllowed: false,
   retries: 0,
@@ -47,11 +50,15 @@ export class AssistController extends EventEmitter {
     this.maxOutputChars = maxOutputChars;
     this.inFlight = null;
     this.frozenContextForRequest = null;
+    this.sessionContext = null;
   }
 
-  startSession(sessionId) {
+  startSession(sessionId, sessionContext = null) {
     this.cancel("session_reset");
     this.frozenContextForRequest = null;
+    this.sessionContext = sessionContext === null
+      ? null
+      : normalizeAssistSessionContext(sessionContext);
     return this.contextBuffer.startSession(sessionId);
   }
 
@@ -60,6 +67,7 @@ export class AssistController extends EventEmitter {
     if (activeSessionId === null || sessionId !== activeSessionId) return false;
     this.cancel("session_reset");
     this.frozenContextForRequest = null;
+    this.sessionContext = null;
     return this.contextBuffer.endSession(sessionId);
   }
 
@@ -71,10 +79,36 @@ export class AssistController extends EventEmitter {
     return this.contextBuffer.snapshot();
   }
 
-  freezeContextForRequest() {
+  getRequestContextSnapshot() {
     const snapshot = this.contextBuffer.snapshot();
-    this.frozenContextForRequest = snapshot;
-    return snapshot;
+    return snapshot && this.sessionContext
+      ? Object.freeze({
+          ...snapshot,
+          profile: this.sessionContext.profile,
+          contextPacks: this.sessionContext.contextPacks
+        })
+      : snapshot;
+  }
+
+  freezeContextForRequest() {
+    this.frozenContextForRequest = this.getRequestContextSnapshot();
+    return this.frozenContextForRequest;
+  }
+
+  getSessionContextSummary() {
+    if (!this.sessionContext) return null;
+    return Object.freeze({
+      profile: Object.freeze({
+        id: this.sessionContext.profile.id,
+        version: this.sessionContext.profile.version,
+        name: this.sessionContext.profile.name
+      }),
+      contextPacks: Object.freeze(this.sessionContext.contextPacks.map((pack) => Object.freeze({
+        kind: pack.kind,
+        name: pack.name,
+        bytes: Buffer.byteLength(pack.content, "utf8")
+      })))
+    });
   }
 
   async request(value) {

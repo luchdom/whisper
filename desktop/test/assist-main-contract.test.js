@@ -22,7 +22,9 @@ test("main ingests accepted finals before renderer relay and binds Assist to bac
     'ipcMain.handle("meeting:audio"'
   );
   assert.match(start, /const engine = await backend\.startSession/);
-  assert.match(start, /startAssistSession\(engine\.session_id\)/);
+  assert.match(start, /const sessionContext = await resolveAssistSelection\(assistSelection\)/);
+  assert.match(start, /startAssistSession\(engine\.session_id, sessionContext\)/);
+  assert.equal(start.indexOf("resolveAssistSelection") < start.indexOf("await backend.startSession"), true);
   assert.equal(start.indexOf("await backend.startSession") < start.indexOf("startAssistSession"), true);
   assert.equal(start.indexOf("startAssistSession") < start.indexOf("return { ok: true, engine }"), true);
   assert.match(main, /function endAssistSession\(sessionId\)[^]*?assistController\?\.endSession\(sessionId\)[^]*?providerController\?\.stopSession\(sessionId\)/);
@@ -85,15 +87,17 @@ test("global Assist shortcut only reveals the UI and fake assistance is developm
   assert.match(main, /if \(focusAssist\) mainWindow\.webContents\.send\("meeting:assist-shortcut"\)/);
 });
 
-test("v0.4 check gate includes every assistance boundary module", async () => {
+test("v0.5 check gate includes every meeting-context and assistance boundary module", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.4.0");
+  assert.equal(packageJson.version, "0.5.0");
   for (const path of [
     "desktop/main/assist-context.js",
     "desktop/main/assist-protocol.js",
     "desktop/main/assist-provider-adapter.js",
     "desktop/main/fake-assist-provider.js",
     "desktop/main/assist-controller.js",
+    "desktop/main/meeting-profiles.js",
+    "desktop/main/context-pack-store.js",
     "desktop/renderer/lib/assist-request-gate.js"
   ]) assert.match(packageJson.scripts.check, new RegExp(escapeRegex(path)));
 });
