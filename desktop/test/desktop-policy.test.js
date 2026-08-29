@@ -78,7 +78,9 @@ test("settings IPC policy accepts only renderer-editable scalar fields", () => {
     autoSave: true,
     closeBehavior: "tray",
     minimizeToTray: true,
-    launchAtStartup: true
+    launchAtStartup: true,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna"
   }, { catalog }), {
     model: "base.en",
     language: "en",
@@ -87,7 +89,9 @@ test("settings IPC policy accepts only renderer-editable scalar fields", () => {
     autoSave: true,
     closeBehavior: "tray",
     minimizeToTray: true,
-    launchAtStartup: true
+    launchAtStartup: true,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna"
   });
 
   assert.throws(
@@ -114,4 +118,18 @@ test("settings IPC policy accepts only renderer-editable scalar fields", () => {
     () => validateRendererSettingsPatch({ launchAtStartup: 1 }, { catalog }),
     /launch-at-startup setting is invalid/
   );
+  assert.throws(
+    () => validateRendererSettingsPatch({ providerMode: "local" }, { catalog }),
+    /provider setting is invalid or unavailable/
+  );
+  assert.throws(
+    () => validateRendererSettingsPatch({ openAIModel: "renderer-model" }, { catalog }),
+    /model setting is invalid/
+  );
+  for (const forbidden of ["apiKey", "providerEndpoint", "systemPrompt"]) {
+    assert.throws(
+      () => validateRendererSettingsPatch({ [forbidden]: "renderer-controlled" }, { catalog }),
+      /unsupported field/
+    );
+  }
 });

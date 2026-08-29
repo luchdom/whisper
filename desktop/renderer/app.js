@@ -21,7 +21,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   autoSave: false,
   closeBehavior: "quit",
   minimizeToTray: false,
-  launchAtStartup: false
+  launchAtStartup: false,
+  providerMode: "off",
+  openAIModel: "gpt-5.6-luna"
 });
 const COMPONENT_LABELS = Object.freeze({
   meeting_transcriber: "Meeting Transcriber backend",
@@ -100,6 +102,19 @@ const elements = {
   minimizeToTray: byId("minimize-to-tray"),
   launchAtStartup: byId("launch-at-startup"),
   startupAvailability: byId("startup-availability"),
+  providerModeOff: byId("provider-mode-off"),
+  providerModeOpenAI: byId("provider-mode-openai"),
+  providerModeLocal: byId("provider-mode-local"),
+  providerCard: byId("openai-provider-card"),
+  providerModel: byId("provider-model-select"),
+  providerCredentialStatus: byId("provider-credential-status"),
+  importProviderCredential: byId("import-provider-credential"),
+  revokeProviderCredential: byId("revoke-provider-credential"),
+  providerDisclosureTitle: byId("provider-disclosure-title"),
+  providerDisclosureSummary: byId("provider-disclosure-summary"),
+  providerDisclosureLinks: byId("provider-disclosure-links"),
+  providerFeedback: byId("provider-feedback"),
+  providerLockNote: byId("provider-lock-note"),
   trayLocationLabels: document.querySelectorAll("[data-tray-location]"),
   engineSetupCard: byId("engine-setup-card"),
   engineSetupTitle: byId("engine-setup-title"),
@@ -118,6 +133,9 @@ let engineSetup = { ...INITIAL_ENGINE_SETUP, python: { ...INITIAL_ENGINE_SETUP.p
 let settingsReady = false;
 let settingsBusy = false;
 let settingsOperationPromise = Promise.resolve();
+let providerStatus = null;
+let providerStatusPromise = null;
+let providerBusy = false;
 let setupCheckPromise = null;
 let setupActionBusy = false;
 let setupFeedback = null;
@@ -170,6 +188,17 @@ elements.minimizeToTray.addEventListener("change", () => void persistSettings({
 elements.launchAtStartup.addEventListener("change", () => void persistSettings({
   launchAtStartup: elements.launchAtStartup.checked
 }));
+elements.providerModeOff.addEventListener("change", () => {
+  if (elements.providerModeOff.checked) void persistProviderSettings({ providerMode: "off" });
+});
+elements.providerModeOpenAI.addEventListener("change", () => {
+  if (elements.providerModeOpenAI.checked) void persistProviderSettings({ providerMode: "openai" });
+});
+elements.providerModel.addEventListener("change", () => void persistProviderSettings({
+  openAIModel: elements.providerModel.value
+}));
+elements.importProviderCredential.addEventListener("click", () => void importProviderCredential());
+elements.revokeProviderCredential.addEventListener("click", () => void revokeProviderCredential());
 elements.settingsButton.addEventListener("click", () => openSettings());
 elements.settingsCloseTop.addEventListener("click", closeSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
@@ -634,11 +663,28 @@ function renderSettingsAvailability() {
   elements.minimizeToTray.disabled = locked;
   elements.launchAtStartup.disabled = locked || !platformInfo.startupSupported;
   elements.startupAvailability.hidden = platformInfo.startupSupported;
+  elements.providerModeOff.disabled = locked || providerBusy;
+  elements.providerModeOpenAI.disabled = locked
+    || providerBusy
+    || providerStatus?.encryptionAvailable === false;
+  elements.providerModeLocal.disabled = true;
+  elements.providerModel.disabled = locked
+    || providerBusy
+    || !providerStatus
+    || settings.providerMode !== "openai";
+  elements.importProviderCredential.disabled = locked
+    || providerBusy
+    || settings.providerMode !== "openai"
+    || providerStatus?.encryptionAvailable !== true
+    || ["invalid", "unreadable"].includes(providerStatus?.credentialState);
+  elements.revokeProviderCredential.disabled = locked || providerBusy;
+  elements.providerLockNote.hidden = !state.active;
   elements.appBehaviorLockNote.hidden = !state.active;
   elements.settingsLockNote.hidden = !state.active;
   renderSelectedModelHelper();
   renderTranslationStatus();
   renderEngineSetup();
+  renderProviderSettings();
 }
 
 function renderTranscript() {
@@ -902,6 +948,7 @@ async function saveFinalTranscriptAutomatically() {
 function openSettings() {
   if (state.active || elements.settingsDialog.open) return;
   elements.settingsDialog.showModal();
+  void refreshProviderStatus();
   queueMicrotask(() => {
     focusEngineSetupRemediation();
   });
@@ -1146,6 +1193,177 @@ function focusEngineSetupRemediation() {
   (target || elements.engineSetupCard).focus();
 }
 
+function refreshProviderStatus() {
+  if (providerStatusPromise) return providerStatusPromise;
+  clearProviderFeedback();
+  renderProviderSettings();
+  const operation = (async () => {
+    try {
+      const result = await bridge.getProviderStatus();
+      if (!result?.ok) throw new Error(result?.error || "Secure provider status could not be checked.");
+      applyProviderStatus(result.provider);
+    } catch (error) {
+      providerStatus = null;
+      setProviderFeedback(error.message || "Secure provider status could not be checked.", "error");
+    }
+  })();
+  providerStatusPromise = operation.finally(() => {
+    providerStatusPromise = null;
+    renderSettingsAvailability();
+  });
+  renderProviderSettings();
+  return providerStatusPromise;
+}
+
+function importProviderCredential() {
+  return runProviderOperation(async () => {
+    const result = await bridge.importProviderCredential();
+    if (!result?.ok) throw new Error(result?.error || "The OpenAI API key could not be imported.");
+    applyProviderStatus(result.provider);
+    setProviderFeedback("OpenAI API key imported into operating-system encrypted storage. No connection test was made.", "success");
+  });
+}
+
+function revokeProviderCredential() {
+  if (!window.confirm("Remove the saved OpenAI API key from this device? AI assistance will be turned Off.")) {
+    return Promise.resolve();
+  }
+  return runProviderOperation(async () => {
+    const result = await bridge.revokeProviderCredential();
+    if (result?.settings) applySettings(result.settings);
+    if (result?.provider) applyProviderStatus(result.provider);
+    if (!result?.ok) throw new Error(result?.error || "The saved OpenAI API key could not be removed.");
+    setProviderFeedback("Saved OpenAI API key removed. AI assistance is Off.", "success");
+  });
+}
+
+function runProviderOperation(task) {
+  if (state.active || providerBusy) return Promise.resolve();
+  providerBusy = true;
+  clearProviderFeedback();
+  renderSettingsAvailability();
+  return (async () => {
+    try {
+      await task();
+    } catch (error) {
+      setProviderFeedback(error.message || "Secure provider settings could not be updated.", "error");
+    } finally {
+      providerBusy = false;
+      renderSettingsAvailability();
+    }
+  })();
+}
+
+function applyProviderStatus(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Secure provider status could not be checked.");
+  }
+  const models = Array.isArray(value.catalog?.openAIModels)
+    ? value.catalog.openAIModels.filter((model) => (
+      model && model.id === "gpt-5.6-luna" && typeof model.label === "string"
+    ))
+    : [];
+  const credentialState = ["absent", "configured", "invalid", "unreadable"].includes(value.credentialState)
+    ? value.credentialState
+    : null;
+  const links = Array.isArray(value.disclosure?.links)
+    ? value.disclosure.links.filter((link) => (
+      link
+      && ["privacy", "data-controls", "usage"].includes(link.id)
+      && typeof link.label === "string"
+    ))
+    : [];
+  if (!credentialState
+    || value.configured !== (credentialState === "configured")
+    || value.removable !== (credentialState !== "absent")
+    || models.length === 0
+    || typeof value.disclosure?.title !== "string"
+    || typeof value.disclosure?.summary !== "string"
+    || typeof value.disclosure?.version !== "string") {
+    throw new Error("Secure provider status could not be checked.");
+  }
+  providerStatus = {
+    credentialState,
+    configured: credentialState === "configured",
+    removable: credentialState !== "absent",
+    encryptionAvailable: value.encryptionAvailable === true,
+    models,
+    disclosure: {
+      title: value.disclosure.title,
+      summary: value.disclosure.summary,
+      version: value.disclosure.version,
+      links
+    }
+  };
+  elements.providerModel.replaceChildren(...models.map((model) => {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.label;
+    return option;
+  }));
+  elements.providerModel.value = settings.openAIModel;
+  renderProviderSettings();
+}
+
+function renderProviderSettings() {
+  elements.providerModeOff.checked = settings.providerMode === "off";
+  elements.providerModeOpenAI.checked = settings.providerMode === "openai";
+  elements.providerCard.hidden = settings.providerMode !== "openai"
+    && providerStatus?.removable !== true;
+  if (providerStatus) elements.providerModel.value = settings.openAIModel;
+
+  if (providerStatusPromise) {
+    elements.providerCredentialStatus.textContent = "Checking operating-system encrypted credential storage…";
+  } else if (!providerStatus) {
+    elements.providerCredentialStatus.textContent = "Secure credential status has not been checked.";
+  } else if (providerStatus.credentialState === "invalid") {
+    elements.providerCredentialStatus.textContent = "A saved credential is invalid and needs removal.";
+  } else if (providerStatus.credentialState === "unreadable") {
+    elements.providerCredentialStatus.textContent = "A saved credential cannot be read and needs removal.";
+  } else if (!providerStatus.encryptionAvailable) {
+    elements.providerCredentialStatus.textContent = "Operating-system encrypted credential storage is unavailable.";
+  } else if (providerStatus.credentialState === "configured") {
+    elements.providerCredentialStatus.textContent = "API key saved in operating-system encrypted storage.";
+  } else {
+    elements.providerCredentialStatus.textContent = "No API key saved.";
+  }
+  elements.revokeProviderCredential.hidden = providerStatus?.removable !== true;
+
+  if (providerStatus?.disclosure) {
+    elements.providerDisclosureTitle.textContent = providerStatus.disclosure.title;
+    elements.providerDisclosureSummary.textContent = providerStatus.disclosure.summary;
+    elements.providerDisclosureLinks.replaceChildren(...providerStatus.disclosure.links.map((link) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "provider-link-button";
+      button.textContent = link.label;
+      button.addEventListener("click", () => void openProviderLink(link.id));
+      return button;
+    }));
+  }
+}
+
+async function openProviderLink(linkId) {
+  const result = await bridge.openProviderLink(linkId);
+  if (!result?.ok) {
+    setProviderFeedback(result?.error || "The provider information page could not be opened.", "error");
+  }
+}
+
+function setProviderFeedback(message, tone) {
+  elements.providerFeedback.textContent = message;
+  elements.providerFeedback.dataset.tone = tone;
+  elements.providerFeedback.setAttribute("role", tone === "error" ? "alert" : "status");
+  elements.providerFeedback.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+}
+
+function clearProviderFeedback() {
+  elements.providerFeedback.textContent = "";
+  elements.providerFeedback.dataset.tone = "";
+  elements.providerFeedback.setAttribute("role", "status");
+  elements.providerFeedback.setAttribute("aria-live", "polite");
+}
+
 async function changeModel() {
   const model = elements.model.value;
   await persistSettings({ model });
@@ -1162,6 +1380,21 @@ function persistSettings(patch) {
     } catch (error) {
       applySettings(previous);
       showAlert(error.message || "Settings could not be saved.", "error");
+    }
+  });
+}
+
+function persistProviderSettings(patch) {
+  return runSettingsOperation(async () => {
+    const previous = settings;
+    clearProviderFeedback();
+    try {
+      const result = await bridge.updateSettings(patch);
+      if (!result?.ok) throw new Error(result?.error || "AI assistance settings could not be saved.");
+      applySettings(result.settings);
+    } catch (error) {
+      applySettings(previous);
+      setProviderFeedback(error.message || "AI assistance settings could not be saved.", "error");
     }
   });
 }
@@ -1252,7 +1485,11 @@ function applySettings(value) {
     autoSave: Boolean(value?.transcriptDirectory && value?.autoSave),
     closeBehavior: value?.closeBehavior === "tray" ? "tray" : "quit",
     minimizeToTray: value?.minimizeToTray === true,
-    launchAtStartup: value?.launchAtStartup === true
+    launchAtStartup: value?.launchAtStartup === true,
+    providerMode: value?.providerMode === "openai" ? "openai" : "off",
+    openAIModel: value?.openAIModel === "gpt-5.6-luna"
+      ? "gpt-5.6-luna"
+      : DEFAULT_SETTINGS.openAIModel
   };
   elements.model.value = settings.model;
   elements.language.value = getEffectiveLanguage(modelById.get(settings.model), settings.language);
@@ -1263,6 +1500,9 @@ function applySettings(value) {
   elements.closeBehaviorTray.checked = settings.closeBehavior === "tray";
   elements.minimizeToTray.checked = settings.minimizeToTray;
   elements.launchAtStartup.checked = settings.launchAtStartup;
+  elements.providerModeOff.checked = settings.providerMode === "off";
+  elements.providerModeOpenAI.checked = settings.providerMode === "openai";
+  if (providerStatus) elements.providerModel.value = settings.openAIModel;
   elements.folder.textContent = settings.transcriptDirectory || "Not set — choose a location when you save.";
   elements.folder.title = settings.transcriptDirectory || "Not set";
   elements.folder.setAttribute(

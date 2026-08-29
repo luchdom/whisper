@@ -96,12 +96,76 @@ test("the preload exposes narrow transcript and settings operations without a ge
 
   for (const method of [
     "cancelStart", "saveCopy", "autoSave", "refreshAutoSave", "getSettings", "updateSettings",
-    "chooseTranscriptFolder", "clearTranscriptFolder", "reportTrayState", "onTrayAction"
+    "chooseTranscriptFolder", "clearTranscriptFolder", "getProviderStatus", "importProviderCredential",
+    "revokeProviderCredential", "openProviderLink", "reportTrayState", "onTrayAction"
   ]) {
     assert.match(preload, new RegExp(`\\b${method}:`));
   }
   assert.doesNotMatch(preload, /writeFile|readFile|filePath\s*=>|saveToPath|chooseFile/);
   assert.match(preload, /const TRAY_ACTIONS = new Set\(\["focus-start", "stop"\]\)/);
+  assert.match(preload, /const PROVIDER_LINKS = new Set\(\["privacy", "data-controls", "usage"\]\)/);
+  assert.doesNotMatch(preload, /importProviderCredential:\s*\([^)]/);
+  assert.doesNotMatch(preload, /revokeProviderCredential:\s*\([^)]/);
+});
+
+test("AI provider settings are overt, lazy, encrypted, and renderer-bounded", async () => {
+  const [html, app, main, policy] = await Promise.all([
+    readFile(new URL("../renderer/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../main/index.js", import.meta.url), "utf8"),
+    readFile(new URL("../main/provider-policy.js", import.meta.url), "utf8")
+  ]);
+
+  assert.equal(html.indexOf('id="provider-settings-heading"') < html.indexOf('id="app-behavior-settings-heading"'), true);
+  assert.match(html, /Optionally use a hosted AI model to help with finalized transcript text\. Local transcription stays separate\./);
+  assert.match(html, /<fieldset class="choice-group" aria-describedby="provider-settings-description provider-feedback">/);
+  assert.match(html, /id="provider-mode-off"[^>]*value="off"[^>]*checked/);
+  assert.match(html, /id="provider-mode-openai"[^>]*value="openai"/);
+  assert.match(html, /id="provider-mode-local"[^>]*value="local"[^>]*disabled/);
+  assert.match(html, /Local model — coming later/);
+  assert.match(html, /id="import-provider-credential"[^>]*>Import from clipboard</);
+  assert.match(html, /id="revoke-provider-credential"[^>]*>Remove key</);
+  assert.doesNotMatch(html, /<input[^>]*(?:api.?key|password)/i);
+  assert.match(html, /id="provider-credential-status" role="status" aria-live="polite"/);
+  assert.match(app, /function openSettings\(\)[^]*?showModal\(\);\s*void refreshProviderStatus\(\);/);
+  assert.equal((app.match(/bridge\.getProviderStatus\(\)/g) ?? []).length, 1);
+  assert.match(app, /providerStatus\?\.encryptionAvailable === false/);
+  assert.match(app, /providerStatus\?\.removable !== true/);
+  assert.match(app, /A saved credential is invalid and needs removal\./);
+  assert.match(app, /A saved credential cannot be read and needs removal\./);
+  assert.match(app, /providerCard\.hidden = settings\.providerMode !== "openai"[^]*?providerStatus\?\.removable !== true/);
+  assert.match(app, /providerStatusPromise = operation\.finally[^]*?renderProviderSettings\(\);\s*return providerStatusPromise;/);
+  assert.match(app, /setAttribute\("role", tone === "error" \? "alert" : "status"\)/);
+  assert.match(app, /setAttribute\("aria-live", tone === "error" \? "assertive" : "polite"\)/);
+  assert.match(app, /providerDisclosureSummary\.textContent = providerStatus\.disclosure\.summary/);
+  assert.match(policy, /Selecting OpenAI or importing a key sends nothing\./);
+  assert.match(policy, /Audio, drafts, and unconfirmed text are never sent\./);
+
+  assert.match(main, /session\.fromPartition\("meeting-transcriber-openai", \{ cache: false \}\)/);
+  assert.match(main, /credentialPath: path\.join\(app\.getPath\("userData"\), "openai-credential\.json"\)/);
+  assert.match(main, /fetch: providerSession\.fetch\.bind\(providerSession\)/);
+  assert.match(main, /const clipboardValue = clipboard\.readText\("clipboard"\);\s*await providerController\.importCredential\(clipboardValue\.trim\(\)\);/);
+  assert.match(main, /clipboard\.readText\("clipboard"\) === clipboardValue\) clipboard\.clear\("clipboard"\)/);
+  const importHandler = main.slice(
+    main.indexOf('ipcMain.handle("meeting:provider-import-clipboard"'),
+    main.indexOf('ipcMain.handle("meeting:provider-revoke"')
+  );
+  assert.equal(
+    importHandler.indexOf("await providerController.importCredential")
+      < importHandler.indexOf('clipboard.clear("clipboard")'),
+    true,
+    "clipboard clearing remains after the awaited successful import"
+  );
+  assert.match(
+    main,
+    /\["credential_cleanup_required", "Remove the saved OpenAI API key before importing another key\."\]/
+  );
+  assert.doesNotMatch(main, /ipcMain\.handle\("meeting:provider-import-clipboard", async \(event,/);
+  assert.doesNotMatch(main, /ipcMain\.handle\("meeting:provider-revoke", async \(event,/);
+  assert.match(main, /resolveProviderExternalLink\(linkId\)/);
+  assert.match(main, /credentialState: status\.credentialState/);
+  assert.match(main, /removable: status\.removable/);
+  assert.match(main, /Hosted assistance is optional and must never prevent the local[^]*?providerController = null;/);
 });
 
 test("selected settings drive start, successful stop precedes autosave, and failed starts restore transcript aliases", async () => {

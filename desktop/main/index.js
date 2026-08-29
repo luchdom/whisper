@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  safeStorage,
   screen,
   session,
   shell,
@@ -44,6 +45,10 @@ import {
 } from "./platform.js";
 import { createStartupService, isHiddenLaunch } from "./startup-service.js";
 import { createTrayController, validateTrayStateDto } from "./tray-controller.js";
+import { createOpenAIProvider } from "./openai-provider.js";
+import { ProviderController } from "./provider-controller.js";
+import { createProviderCredentialStore } from "./provider-credential-store.js";
+import { resolveProviderExternalLink } from "./provider-policy.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
@@ -77,6 +82,8 @@ const PUBLIC_ERROR_MESSAGES = new Set([
   "Settings update contains an unsupported field.",
   "Settings update must be an object.",
   "The automatic save setting is invalid.",
+  "The assistance model setting is invalid.",
+  "The assistance provider setting is invalid or unavailable.",
   "The launch-at-startup setting is invalid.",
   "The minimize-to-tray setting is invalid.",
   "The local application data path is invalid.",
@@ -111,6 +118,7 @@ let hideNextWindowOnReady = isHiddenLaunch(process.argv);
 let settingsStore = null;
 let startupService = null;
 let trayController = null;
+let providerController = null;
 let desktopBootstrapReady = false;
 let pendingWindowShow = null;
 let settings = { ...DEFAULT_SETTINGS };
@@ -263,6 +271,24 @@ function createApplicationTray() {
   // Readiness is not established until the renderer reconciles the catalog
   // and prerequisite doctor. Never advertise Ready during that bootstrap gap.
   trayController.setState("preparing");
+}
+
+function createProviderBoundary() {
+  const providerSession = session.fromPartition("meeting-transcriber-openai", { cache: false });
+  const credentialStore = createProviderCredentialStore({
+    credentialPath: path.join(app.getPath("userData"), "openai-credential.json"),
+    safeStorage
+  });
+  providerController = new ProviderController({
+    credentialStore,
+    openAIProvider: createOpenAIProvider({
+      fetch: providerSession.fetch.bind(providerSession)
+    })
+  });
+  providerController.configure({
+    mode: settings.providerMode,
+    model: settings.openAIModel
+  });
 }
 
 async function closeWindowSafely({ shouldQuit }) {
@@ -504,6 +530,10 @@ function registerIpc() {
       if (Object.keys(persistedPatch).length > 0) {
         settings = await settingsStore.update(persistedPatch);
       }
+      providerController?.configure({
+        mode: settings.providerMode,
+        model: settings.openAIModel
+      });
       return { ok: true, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "Settings could not be saved.") };
@@ -541,6 +571,92 @@ function registerIpc() {
       return { ok: true, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "The transcript folder setting could not be cleared.") };
+    }
+  });
+
+  ipcMain.handle("meeting:provider-status", async (event) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    try {
+      return { ok: true, provider: await getRendererProviderStatus() };
+    } catch {
+      return { ok: false, error: "Secure provider status could not be checked." };
+    }
+  });
+
+  ipcMain.handle("meeting:provider-import-clipboard", async (event) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (settingsAreLocked()) return settingsLockedResult();
+    try {
+      if (!providerController) return providerUnavailableResult();
+      const clipboardValue = clipboard.readText("clipboard");
+      await providerController.importCredential(clipboardValue.trim());
+      if (clipboard.readText("clipboard") === clipboardValue) clipboard.clear("clipboard");
+      return { ok: true, provider: await getRendererProviderStatus() };
+    } catch (error) {
+      return { ok: false, error: providerPublicError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:provider-revoke", async (event) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (settingsAreLocked()) return settingsLockedResult();
+    if (!providerController || !settingsStore) return providerUnavailableResult();
+    let revokeError = null;
+    try {
+      await providerController.revokeCredential();
+    } catch (error) {
+      providerController.setMode("off");
+      revokeError = error;
+    }
+    const runtimeOffSettings = { ...settings, providerMode: "off" };
+    let settingsError = false;
+    try {
+      settings = await settingsStore.update({ providerMode: "off" });
+    } catch {
+      settings = runtimeOffSettings;
+      settingsError = true;
+    }
+    const rendererStatus = await getRendererProviderStatus().catch(() => null);
+    const safeState = {
+      settings: getRendererSettings(),
+      provider: rendererStatus
+    };
+    if (revokeError) {
+      return {
+        ok: false,
+        error: settingsError
+          ? "Assistance is Off for this session, but the saved OpenAI API key could not be removed and the Off preference could not be saved. Restart the app and try again."
+          : "Assistance is Off, but the saved OpenAI API key could not be removed. Try again.",
+        ...safeState
+      };
+    }
+    if (settingsError) {
+      return {
+        ok: false,
+        error: "The saved OpenAI API key was removed and assistance is Off for this session, but the Off preference could not be saved. Restart the app and verify Settings.",
+        ...safeState
+      };
+    }
+    if (!rendererStatus) {
+      return {
+        ok: false,
+        error: "The saved OpenAI API key was removed and assistance is Off, but secure provider status could not be refreshed.",
+        ...safeState
+      };
+    }
+    return {
+      ok: true,
+      ...safeState
+    };
+  });
+
+  ipcMain.handle("meeting:provider-open-link", async (event, linkId) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    try {
+      await shell.openExternal(resolveProviderExternalLink(linkId));
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "The provider information page could not be opened." };
     }
   });
 
@@ -619,6 +735,27 @@ function getRendererSettings() {
   };
 }
 
+async function getRendererProviderStatus() {
+  if (!providerController) throw new Error("provider_unavailable");
+  const status = await providerController.getStatus();
+  if (!["absent", "configured", "invalid", "unreadable"].includes(status.credentialState)) {
+    throw new Error("provider_status_invalid");
+  }
+  return {
+    mode: status.mode,
+    model: status.model,
+    configured: status.configured,
+    credentialState: status.credentialState,
+    removable: status.removable,
+    encryptionAvailable: status.encryptionAvailable,
+    catalog: {
+      modes: status.catalog.modes,
+      openAIModels: status.catalog.openAIModels
+    },
+    disclosure: status.disclosure
+  };
+}
+
 function isTrustedRendererFrame(frame) {
   return Boolean(
     mainWindow
@@ -645,6 +782,24 @@ function settingsLockedResult() {
 
 function modelCatalogUnavailableResult() {
   return { ok: false, error: "Model catalog unavailable." };
+}
+
+function providerUnavailableResult() {
+  return { ok: false, error: "Secure provider settings are unavailable." };
+}
+
+function providerPublicError(error) {
+  const messages = new Map([
+    ["invalid_credential", "Copy a valid OpenAI API key, then try importing again."],
+    ["credential_cleanup_required", "Remove the saved OpenAI API key before importing another key."],
+    ["secure_storage_unavailable", "Secure credential storage is unavailable on this computer."],
+    ["credential_encryption_failed", "The OpenAI API key could not be stored securely."],
+    ["credential_write_failed", "The OpenAI API key could not be stored securely."],
+    ["credential_revoke_failed", "The saved OpenAI API key could not be removed."],
+    ["credential_read_failed", "The saved OpenAI API key could not be read."],
+    ["credential_corrupt", "The saved OpenAI API key is invalid. Remove it and add it again."]
+  ]);
+  return messages.get(error?.code) ?? "Secure provider settings could not be updated.";
 }
 
 function transcriptErrorResult(error, fallback) {
@@ -704,6 +859,13 @@ if (!hasSingleInstanceLock) {
         settings = { ...DEFAULT_SETTINGS };
       }
     }
+    try {
+      createProviderBoundary();
+    } catch {
+      // Hosted assistance is optional and must never prevent the local
+      // transcription application from starting.
+      providerController = null;
+    }
     registerIpc();
     configureMediaCapture();
     createApplicationTray();
@@ -724,6 +886,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
+    providerController?.cancelRequest();
     trayController?.destroy();
     trayController = null;
   });

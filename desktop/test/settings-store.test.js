@@ -26,6 +26,8 @@ test("settings sanitization uses the runtime catalog and preserves multilingual 
     translation: "en_to_pt_br",
     transcriptDirectory: "relative/transcripts",
     autoSave: true,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna",
     unknown: "discarded"
   }, { catalog }), {
     model: "medium.en",
@@ -35,7 +37,9 @@ test("settings sanitization uses the runtime catalog and preserves multilingual 
     transcriptDirectory: null,
     autoSave: false,
     closeBehavior: "quit",
-    minimizeToTray: false
+    minimizeToTray: false,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna"
   });
   assert.deepEqual(sanitizeSettings({
     model: "removed-model",
@@ -43,7 +47,10 @@ test("settings sanitization uses the runtime catalog and preserves multilingual 
     diarization: "yes",
     translation: "cloud",
     transcriptDirectory: 42,
-    autoSave: 1
+    autoSave: 1,
+    providerMode: "local",
+    openAIModel: "renderer-model",
+    apiKey: "must-not-persist"
   }, { catalog }), DEFAULT_SETTINGS);
 
   for (const model of catalog.getRendererDto().models.map(({ id }) => id)) {
@@ -86,6 +93,8 @@ test("settings save uses the user-data directory, strips unknown values, and lea
     autoSave: true,
     closeBehavior: "tray",
     minimizeToTray: true,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna",
     secret: "not persisted"
   });
 
@@ -97,7 +106,9 @@ test("settings save uses the user-data directory, strips unknown values, and lea
     transcriptDirectory,
     autoSave: true,
     closeBehavior: "tray",
-    minimizeToTray: true
+    minimizeToTray: true,
+    providerMode: "openai",
+    openAIModel: "gpt-5.6-luna"
   });
   assert.deepEqual(await store.load(), saved);
   assert.deepEqual(

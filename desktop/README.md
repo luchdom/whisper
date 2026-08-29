@@ -45,6 +45,18 @@ Open **Settings > App behavior** to change the defaults:
 
 Only one app instance runs. A second launch shows and focuses the existing window. The explicit `--hidden` argument hides the first window for startup integration without changing capture state.
 
+## Hosted AI provider setup
+
+**Settings > AI assistance** is the configuration and credential foundation for a later meeting-assistance flow. **Off** is the default. **OpenAI API** is available, and **Local model — coming later** is visible but disabled. Selecting OpenAI or its fixed **GPT-5.6 Luna** model only persists the choice; it does not test the connection, contact OpenAI, or send meeting content.
+
+The API key never enters a renderer form or renderer state. **Import from clipboard** invokes an argument-free main-process handler, which reads the clipboard itself, trims surrounding whitespace for validation, encrypts the key with Electron's asynchronous `safeStorage` API, writes ciphertext atomically to the app user-data directory, and clears the clipboard only if its original exact contents are unchanged. Windows uses DPAPI and macOS uses Keychain. **Remove key** asks for confirmation, removes the encrypted record, resets per-session consent state, and turns the provider Off. Settings exposes only privacy-safe absent/configured/invalid/unreadable state, encryption availability, and sanitized errors; no key, ciphertext, local path, or raw exception crosses preload.
+
+If an encrypted credential artifact is malformed or cannot be read, Settings reports only that it needs removal and keeps **Remove key** available. Revocation unlinks the exact app-owned artifact without first parsing or decrypting it whenever the operating system permits deletion.
+
+Credential status is checked lazily only when Settings opens. Import and selection do not make a connection test. The main process owns a non-persistent Electron session, fixed Responses endpoint, strict model allowlist, versioned disclosure, request bounds, cancellation, redirect rejection, and sanitized failures. With the provider Off, the controller exits before credential decryption, transcript-context serialization, DNS, or fetch. Provider setup failure cannot prevent local transcription from starting or stopping.
+
+This release does not expose an Assist action and does not send transcripts. The planned request flow requires explicit consent for each meeting and sends only finalized transcript excerpts plus the user's question; audio, drafts, and unconfirmed text remain local. API usage may be billed separately, so the UI opens only fixed current Privacy, Data controls, and Usage pages and does not hardcode a price.
+
 ## Source setup
 
 Install Node.js 22+, pnpm 10+, and official CPython 3.12.x first. [Python 3.12.10](https://www.python.org/downloads/release/python-31210/) is the last 3.12 release with official Windows and macOS binary installers. The project scripts never download Python, use an OS package manager, request elevation, or install into the system interpreter.

@@ -4,6 +4,10 @@ import {
   ALLOWED_LANGUAGES,
   ALLOWED_TRANSLATION_MODES
 } from "./settings-store.js";
+import {
+  assertAvailableProviderMode,
+  assertOpenAIModel
+} from "./provider-policy.js";
 
 const START_KEYS = new Set(["model", "language", "diarization", "translation"]);
 const SETTINGS_PATCH_KEYS = new Set([
@@ -14,7 +18,9 @@ const SETTINGS_PATCH_KEYS = new Set([
   "autoSave",
   "closeBehavior",
   "minimizeToTray",
-  "launchAtStartup"
+  "launchAtStartup",
+  "providerMode",
+  "openAIModel"
 ]);
 const LANGUAGE_SET = new Set(ALLOWED_LANGUAGES);
 const TRANSLATION_SET = new Set(ALLOWED_TRANSLATION_MODES);
@@ -103,6 +109,20 @@ export function validateRendererSettingsPatch(value, { catalog } = {}) {
       throw new TypeError("The launch-at-startup setting is invalid.");
     }
     patch.launchAtStartup = value.launchAtStartup;
+  }
+  if ("providerMode" in value) {
+    try {
+      patch.providerMode = assertAvailableProviderMode(value.providerMode);
+    } catch {
+      throw new TypeError("The assistance provider setting is invalid or unavailable.");
+    }
+  }
+  if ("openAIModel" in value) {
+    try {
+      patch.openAIModel = assertOpenAIModel(value.openAIModel);
+    } catch {
+      throw new TypeError("The assistance model setting is invalid.");
+    }
   }
   return patch;
 }

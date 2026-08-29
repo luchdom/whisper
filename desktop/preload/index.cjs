@@ -7,6 +7,7 @@ function on(channel, listener) {
 }
 
 const TRAY_ACTIONS = new Set(["focus-start", "stop"]);
+const PROVIDER_LINKS = new Set(["privacy", "data-controls", "usage"]);
 
 contextBridge.exposeInMainWorld("meeting", Object.freeze({
   start: (options) => ipcRenderer.invoke("meeting:start", options),
@@ -25,6 +26,12 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   updateSettings: (patch) => ipcRenderer.invoke("meeting:settings-update", patch),
   chooseTranscriptFolder: () => ipcRenderer.invoke("meeting:settings-choose-directory"),
   clearTranscriptFolder: () => ipcRenderer.invoke("meeting:settings-clear-directory"),
+  getProviderStatus: () => ipcRenderer.invoke("meeting:provider-status"),
+  importProviderCredential: () => ipcRenderer.invoke("meeting:provider-import-clipboard"),
+  revokeProviderCredential: () => ipcRenderer.invoke("meeting:provider-revoke"),
+  openProviderLink: (linkId) => PROVIDER_LINKS.has(linkId)
+    ? ipcRenderer.invoke("meeting:provider-open-link", linkId)
+    : Promise.resolve({ ok: false, error: "Invalid provider link." }),
   getPlatform: () => ipcRenderer.invoke("meeting:platform"),
   getEnginePrerequisites: () => ipcRenderer.invoke("meeting:engine-prerequisites"),
   openPythonDownloadPage: () => ipcRenderer.invoke("meeting:open-python-download"),

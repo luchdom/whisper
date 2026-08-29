@@ -911,6 +911,92 @@ dialog::backdrop {
   background: var(--surface-subtle);
 }
 
+.provider-card,
+.provider-disclosure {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+}
+
+.provider-model-field {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-model-field select {
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.provider-credential-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.provider-credential-row > div:first-child {
+  min-width: 0;
+}
+
+.provider-credential-row strong,
+.provider-disclosure strong {
+  font-size: 12px;
+}
+
+.provider-actions,
+.provider-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-actions {
+  justify-content: flex-end;
+}
+
+.danger-action {
+  color: var(--danger);
+}
+
+.provider-link-button {
+  padding: 0;
+  color: var(--accent);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.provider-link-button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 40%, transparent);
+  outline-offset: 2px;
+}
+
+.provider-feedback {
+  min-height: 1.45em;
+  margin-top: 0 !important;
+}
+
+.provider-feedback[data-tone="error"] {
+  color: var(--danger);
+}
+
+.provider-feedback[data-tone="success"] {
+  color: var(--success);
+}
+
 .settings-dialog-footer {
   justify-content: flex-end;
 }

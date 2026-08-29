@@ -26,6 +26,7 @@ The two audio sources stay separate from capture through inference. That gives a
 - Loads the bundled model manifest and exposes only a sanitized catalog data-transfer object (DTO) containing public IDs and presentation metadata. Repository revisions, URLs, hashes, and local cache paths do not cross into the renderer.
 - Relays only allowlisted model-preparation phases; app-owned cache paths and download internals never cross into the renderer.
 - Owns native file/folder pickers and every file write. The sandboxed renderer may display the selected transcript-directory path, but it cannot submit an arbitrary path or perform filesystem operations.
+- Owns the optional hosted-provider boundary: non-persistent network session, fixed endpoint/model/system policy, operating-system encrypted credential store, versioned disclosure, request bounds, cancellation, and sanitized errors. Provider initialization is isolated so failure cannot block local transcription bootstrap.
 - Does not log stderr, PCM, transcript text, or participant data.
 
 ### Sandboxed renderer
@@ -37,6 +38,7 @@ The two audio sources stay separate from capture through inference. That gives a
 - Reconciles stable segment IDs by increasing revision, assigns first-seen friendly labels, applies session-local manual aliases, preserves original text as canonical, and exports finalized text only.
 - Presents model preparation as accessible indeterminate progress and clears it when the engine becomes ready or unavailable.
 - Reports only an exact tray-state enum and accepts only fixed focus/stop tray actions; transcript text, errors, paths, and participant data never enter native tray content.
+- Can choose Off or the allowlisted OpenAI provider, request lazy configured/encryption-available status, and trigger argument-free clipboard import/revocation. It never receives an API key, ciphertext, credential path, arbitrary provider URL, or raw provider exception.
 
 ### Python sidecar
 
@@ -72,6 +74,20 @@ The speaker entry uses a fixed sherpa-onnx commit and release asset plus an exac
 
 The main process exposes a sanitized catalog DTO for display and settings validation. The renderer can choose a known ID, but it cannot supply a repository, revision, URL, local path, or checksum.
 
+## Hosted provider foundation
+
+Hosted assistance is Off by default and is not yet connected to a renderer Assist action. The current release establishes the boundary without sending transcript data or testing a connection during selection or credential import.
+
+Credential import is main-process-only and argument-free across preload. Main reads the current clipboard, trims only surrounding whitespace for key validation, encrypts the key with Electron's asynchronous `safeStorage`, atomically persists a versioned ciphertext record under the exact app user-data path, and clears the clipboard only when the original exact value is still present. Windows maps this to DPAPI and macOS to Keychain. Decryption exists only for a bounded main-owned request; renderer DTOs contain only privacy-safe credential state and encryption availability, never a key, ciphertext, path, or raw exception. Revocation cancels provider work, clears consent, removes the encrypted record, and turns the runtime provider Off even if preference persistence later fails.
+
+Credential inspection exposes only `absent`, `configured`, `invalid`, or `unreadable`. Invalid and unreadable artifacts remain explicitly removable; revocation attempts to unlink the exact app-owned path without parsing or decrypting the artifact first.
+
+The OpenAI transport uses an in-memory Electron session and the exact `https://api.openai.com/v1/responses` endpoint. The renderer cannot supply an endpoint, model ID outside the allowlist, system prompt, tools, conversation ID, metadata, or prior response. Requests set `store: false` and `background: false`, reject redirects, stream bounded SSE, allow one in-flight request with no queue or retry, support cancellation/timeout, and enforce context, question, output, response, interval, and per-session caps. Provider Off returns before credential decryption, context serialization, DNS, or fetch.
+
+Hosted model IDs are allowlisted identifiers, not downloaded artifacts. They cannot be pinned through the local model manifest's commit and SHA-256 contract, and the provider may update behavior behind an identifier. Immutable revision and artifact-hash guarantees apply only to locally downloaded models.
+
+The versioned disclosure is the single main-owned source of UI copy and fixed Privacy, Data controls, and Usage link IDs. Selecting OpenAI or importing a key sends nothing. The next Assist milestone must obtain consent for the active meeting and send only finalized transcript excerpts plus the user's explicit question; audio, drafts, and unconfirmed text remain outside this boundary. Provider failure is independent from sidecar capture/start/stop/finalization.
+
 ## Translation semantics and ordering
 
 Translation mode is `off` by default. The only current enabled mode is local English to Brazilian Portuguese on Windows x64.
@@ -101,6 +117,7 @@ This boundary lets a future engine use a native streaming recognizer, local WebS
 - Translation never replaces or mutates the original transcript. The original remains available when translation is disabled, unsupported, or fails.
 - A final ASR failure or inference overload produces a non-success session reason. The main process then blocks autosave so an incomplete transcript is never announced as successfully saved.
 - Voice identity, voice enrollment, cloud summaries, and meeting advice require separate opt-in designs.
+- Hosted assistance remains Off by default. Provider selection and credential import send nothing, and the current UI has no request action. Any later request requires meeting-specific versioned consent and excludes audio, drafts, and unconfirmed transcript text.
 - Windows endpoint loopback can include notifications and unrelated application sounds. Process-scoped capture is a later privacy improvement.
 
 ## Platform boundary
@@ -124,4 +141,5 @@ A one-sentence English-to-pt-BR smoke completed in 0.109 seconds on the validate
 3. Decide whether an explicit opt-in audio-retention mode is acceptable for a stronger offline, overlap-aware speaker correction pass.
 4. Decide whether to port the proven live subsystem into a Vibe fork or continue this shell.
 5. Validate the overt tray experience on macOS hardware, then add meeting detection, retention controls, and a bundled/signed runtime.
-6. Only then introduce a local meeting copilot with explicit privacy, consent, and output-quality safeguards.
+6. Connect the completed hosted-provider boundary to an explicit Assist action with session/revision identity, finalized-only rolling context, meeting-specific consent, cancellation, stale-response handling, and clear fact/suggestion/uncertainty presentation.
+7. Evaluate a fully local assistance model after measuring its disk, RAM, latency, and quality tradeoffs on Windows and macOS.

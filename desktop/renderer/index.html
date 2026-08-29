@@ -158,6 +158,62 @@
           </div>
         </section>
 
+        <section class="settings-section" aria-labelledby="provider-settings-heading">
+          <div>
+            <h3 id="provider-settings-heading">AI assistance</h3>
+            <p id="provider-settings-description">Optionally use a hosted AI model to help with finalized transcript text. Local transcription stays separate.</p>
+          </div>
+          <fieldset class="choice-group" aria-describedby="provider-settings-description provider-feedback">
+            <legend>Assistance provider</legend>
+            <label class="choice-row" for="provider-mode-off">
+              <input id="provider-mode-off" name="provider-mode" type="radio" value="off" checked>
+              <span>
+                <strong>Off</strong>
+                <small>No hosted assistance and no provider network requests.</small>
+              </span>
+            </label>
+            <label class="choice-row" for="provider-mode-openai">
+              <input id="provider-mode-openai" name="provider-mode" type="radio" value="openai">
+              <span>
+                <strong>OpenAI API</strong>
+                <small>Uses your separately billed OpenAI API key only for assistance requests you approve.</small>
+              </span>
+            </label>
+            <label class="choice-row" for="provider-mode-local">
+              <input id="provider-mode-local" name="provider-mode" type="radio" value="local" disabled>
+              <span>
+                <strong>Local model — coming later</strong>
+                <small>Reserved for a future fully local assistance model.</small>
+              </span>
+            </label>
+          </fieldset>
+          <div id="openai-provider-card" class="provider-card" hidden>
+            <label class="provider-model-field" for="provider-model-select">
+              <span class="field-label">Hosted model</span>
+              <select id="provider-model-select" aria-describedby="provider-model-help"></select>
+            </label>
+            <p id="provider-model-help">Model choices are fixed by this application. Selecting one does not contact OpenAI.</p>
+            <div class="provider-credential-row">
+              <div>
+                <strong>OpenAI API key</strong>
+                <p id="provider-credential-status" role="status" aria-live="polite" aria-atomic="true">Open Settings to check secure credential storage.</p>
+              </div>
+              <div class="provider-actions">
+                <button id="import-provider-credential" class="secondary-action" type="button">Import from clipboard</button>
+                <button id="revoke-provider-credential" class="secondary-action danger-action" type="button" hidden>Remove key</button>
+              </div>
+            </div>
+            <p>Copy an OpenAI API key before importing. The key goes directly from the clipboard to operating-system encrypted storage, is never shown here, and is cleared from the clipboard after a successful import. Importing does not test the connection.</p>
+            <div class="provider-disclosure" aria-live="polite">
+              <strong id="provider-disclosure-title">Provider disclosure</strong>
+              <p id="provider-disclosure-summary">Provider information loads when Settings opens.</p>
+              <div id="provider-disclosure-links" class="provider-links"></div>
+            </div>
+          </div>
+          <p id="provider-feedback" class="provider-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
+          <p id="provider-lock-note" class="settings-lock-note" hidden>Stop the meeting to change AI assistance settings.</p>
+        </section>
+
         <section class="settings-section" aria-labelledby="app-behavior-settings-heading">
           <div>
             <h3 id="app-behavior-settings-heading">App behavior</h3>

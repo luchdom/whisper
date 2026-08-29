@@ -15,6 +15,7 @@ A local-first Windows and macOS desktop prototype for transcribing meetings whil
 - Provisional anonymous labels for the meeting-audio track: **Speaker 1**, **Speaker 2**, and so on.
 - In-place speaker renaming. A rename applies to every segment from that speaker for the current meeting and to the exported transcript.
 - Local settings for speaker detection, transcript folder, and automatic saving after a successful stop.
+- An opt-in hosted-assistance provider foundation with OpenAI Off by default, a fixed model allowlist, operating-system encrypted API-key storage, and no connection test or transcript upload during configuration. The actual Assist flow is a later milestone.
 - An overt Windows notification-area/macOS menu-bar experience with idle, preparing, recording, error, and stopped states; elapsed recording time; and native Stop, Show, Start-focus, and Quit actions.
 - Opt-in close-to-tray, minimize-to-tray, and installed-app launch-at-sign-in behavior. Normal close still quits by default, normal minimize remains the default, and startup never begins capture.
 - Separate source labels: **You** for the microphone and **Meeting audio** when no speaker cluster is available.
@@ -78,6 +79,18 @@ For a deterministic desktop smoke run:
 $env:MEETING_TRANSCRIBER_FAKE = "1"
 pnpm start
 ```
+
+## Hosted AI assistance foundation
+
+Open **Settings > AI assistance** to leave hosted assistance **Off** or prepare the OpenAI API option. Local transcription stays independent. Selecting OpenAI, selecting the fixed hosted model, checking credential status, or importing a key makes no OpenAI request and sends no meeting data.
+
+There is deliberately no API-key text field. Copy an OpenAI API key and choose **Import from clipboard**; Electron's main process trims surrounding whitespace, validates the key, encrypts it through the operating system, stores ciphertext only under the app's private user-data directory, and clears the clipboard only when the exact copied value is still present after a successful import. Windows uses DPAPI and macOS uses Keychain through Electron `safeStorage`. The sandboxed renderer receives only configured/unconfigured and encryption-availability status—it never receives the key, ciphertext, credential path, or raw storage errors. **Remove key** requires confirmation, revokes the saved ciphertext, and turns assistance Off.
+
+The current hosted-model allowlist contains **GPT-5.6 Luna** and the transport is main-process-owned: a non-persistent Electron session can call only the fixed OpenAI Responses endpoint, rejects redirects, uses bounded streaming, and has no renderer-controlled endpoint, model ID, or system prompt. Off short-circuits before credential decryption, context construction, DNS, or fetch. No connection test runs during setup, and there is no Assist button in this version, so the application cannot send a transcript yet.
+
+Hosted OpenAI model IDs are allowlisted, but they are not downloaded immutable artifacts and cannot use the repository's commit/SHA-256 manifest; OpenAI may update behavior behind a hosted model ID. The immutable revision and file-hash guarantee applies to downloaded local models only.
+
+The in-app disclosure is main-owned and versioned. The planned request flow will require meeting-specific consent and will send only finalized transcript excerpts plus the user's question—never audio, drafts, or unconfirmed text. OpenAI API usage may be billed separately; the Settings section links to current Privacy, Data controls, and Usage pages instead of embedding a price.
 
 ## Model choices
 

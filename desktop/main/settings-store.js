@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sanitizeStoredProviderSettings } from "./provider-policy.js";
 
 export const ALLOWED_LANGUAGES = Object.freeze(["auto", "en", "pt"]);
 export const ALLOWED_TRANSLATION_MODES = Object.freeze(["off", "en_to_pt_br"]);
@@ -14,7 +15,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   transcriptDirectory: null,
   autoSave: false,
   closeBehavior: "quit",
-  minimizeToTray: false
+  minimizeToTray: false,
+  providerMode: "off",
+  openAIModel: "gpt-5.6-luna"
 });
 
 const LANGUAGE_SET = new Set(ALLOWED_LANGUAGES);
@@ -33,6 +36,7 @@ export function sanitizeSettings(value, { catalog } = {}) {
   const requestedTranslation = TRANSLATION_SET.has(input.translation)
     ? input.translation
     : DEFAULT_SETTINGS.translation;
+  const provider = sanitizeStoredProviderSettings(input);
 
   return {
     model,
@@ -54,7 +58,8 @@ export function sanitizeSettings(value, { catalog } = {}) {
       : DEFAULT_SETTINGS.closeBehavior,
     minimizeToTray: typeof input.minimizeToTray === "boolean"
       ? input.minimizeToTray
-      : DEFAULT_SETTINGS.minimizeToTray
+      : DEFAULT_SETTINGS.minimizeToTray,
+    ...provider
   };
 }
 
