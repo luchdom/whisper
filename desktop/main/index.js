@@ -29,6 +29,7 @@ const projectRoot = path.resolve(currentDirectory, "..", "..");
 const rendererEntry = path.join(projectRoot, "desktop", "renderer", "index.html");
 const rendererUrl = pathToFileURL(rendererEntry).href;
 const preloadEntry = path.join(projectRoot, "desktop", "preload", "index.cjs");
+const applicationIcon = path.join(projectRoot, "desktop", "build", "icon.png");
 const backendRoot = app.isPackaged
   ? path.join(process.resourcesPath, "backend")
   : path.join(projectRoot, "backend");
@@ -113,6 +114,7 @@ function createWindow() {
     minHeight: 600,
     show: false,
     title: "Meeting Transcriber",
+    icon: applicationIcon,
     backgroundColor: "#f5f6f8",
     autoHideMenuBar: true,
     webPreferences: {

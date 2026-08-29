@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="desktop/build/icon.png" width="128" height="128" alt="Meeting Transcriber logo">
+</p>
+
 # Meeting Transcriber
 
 A local-first Windows and macOS desktop prototype for transcribing meetings while they happen. It captures meeting audio and the microphone as separate tracks, streams them to a local Python process, and replaces provisional text with finalized segments in the UI.

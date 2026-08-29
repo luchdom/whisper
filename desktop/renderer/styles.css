@@ -82,6 +82,20 @@ select:focus-visible,
   gap: 16px;
 }
 
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 .header-settings {
   min-height: 36px;
 }

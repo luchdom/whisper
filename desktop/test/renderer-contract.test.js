@@ -50,6 +50,24 @@ test("the rendered product is English and exposes the functional model, language
   assert.doesNotMatch(html, /Transcri(?:ção|cao)|Configurações|Salvar|Microfone|Áudio da reunião/i);
 });
 
+test("the Conversation Weave identity is visible in the renderer and wired into desktop packaging", async () => {
+  const [html, styles, main, packageJson] = await Promise.all([
+    readFile(new URL("../renderer/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../main/index.js", import.meta.url), "utf8"),
+    readFile(new URL("../../package.json", import.meta.url), "utf8")
+  ]);
+  const packaging = JSON.parse(packageJson).build;
+
+  assert.match(html, /<link rel="icon" type="image\/png" href="\.\.\/build\/icon\.png">/);
+  assert.match(html, /<img class="app-logo" src="\.\.\/build\/icon\.png" width="48" height="48" alt="">/);
+  assert.match(styles, /\.app-logo\s*\{/);
+  assert.match(main, /icon: applicationIcon/);
+  assert.equal(packaging.win.icon, "desktop/build/icon.ico");
+  assert.equal(packaging.mac.icon, "desktop/build/icon.icns");
+  assert.equal(packaging.files.includes("desktop/build/icon.png"), true);
+});
+
 test("model loading uses honest indeterminate phases and resets when the engine settles", async () => {
   const app = await readFile(new URL("../renderer/app.js", import.meta.url), "utf8");
 

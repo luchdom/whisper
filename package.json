@@ -25,6 +25,7 @@
       "desktop/main/**/*",
       "desktop/preload/**/*",
       "desktop/renderer/**/*",
+      "desktop/build/icon.png",
       "package.json"
     ],
     "extraResources": [
@@ -46,6 +47,7 @@
       }
     ],
     "mac": {
+      "icon": "desktop/build/icon.icns",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -61,6 +63,7 @@
       ]
     },
     "win": {
+      "icon": "desktop/build/icon.ico",
       "target": [
         "nsis",
         "zip"

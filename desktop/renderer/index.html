@@ -8,15 +8,18 @@
       content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     >
     <title>Meeting Transcriber</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/png" href="../build/icon.png">
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <div class="app-shell">
       <header class="app-header">
-        <div class="app-title-block">
-          <h1>Meeting Transcriber</h1>
-          <p><span class="privacy-mark" aria-hidden="true">●</span> Private on this device</p>
+        <div class="app-brand">
+          <img class="app-logo" src="../build/icon.png" width="48" height="48" alt="">
+          <div class="app-title-block">
+            <h1>Meeting Transcriber</h1>
+            <p><span class="privacy-mark" aria-hidden="true">●</span> Private on this device</p>
+          </div>
         </div>
         <div class="header-actions">
           <button id="open-settings" class="secondary-action header-settings" type="button">Settings</button>
