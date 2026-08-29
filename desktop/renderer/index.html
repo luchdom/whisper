@@ -145,12 +145,17 @@
             <div class="transcript-actions" aria-label="Transcript actions">
               <button id="copy-transcript" class="secondary-action" type="button" disabled>Copy</button>
               <button id="save-transcript" class="secondary-action" type="button" disabled>Save copy…</button>
+              <button id="clear-transcript-view" class="secondary-action" type="button" aria-pressed="false" disabled>Clear transcript view…</button>
             </div>
           </header>
           <div id="transcript-scroll" class="transcript-scroll">
             <div id="empty-transcript" class="empty-transcript">
               <strong>Your conversation will appear here.</strong>
               <span>Start transcription and speak normally in your meeting.</span>
+            </div>
+            <div id="cleared-transcript" class="empty-transcript transcript-cleared" hidden>
+              <strong>Transcript view cleared.</strong>
+              <span>The underlying local text remains available for debrief sources. Use Restore transcript view to show it again.</span>
             </div>
             <div id="transcript-content" class="transcript-content" aria-live="off" aria-label="Transcript segments"></div>
             <div id="transcript-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -161,7 +166,10 @@
         <aside class="insight-rail" aria-label="Meeting workspace">
           <div class="workspace-tabs" role="tablist" aria-label="Meeting workspace tabs">
             <button id="workspace-tab-copilot" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="workspace-panel-copilot" tabindex="0">Copilot</button>
-            <button id="workspace-tab-debrief" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="workspace-panel-debrief" tabindex="-1">Debrief</button>
+            <button id="workspace-tab-debrief" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="workspace-panel-debrief" tabindex="-1">
+              <span>Debrief</span>
+              <span id="debrief-tab-indicator" class="debrief-tab-indicator" aria-hidden="true" hidden></span>
+            </button>
           </div>
           <div id="workspace-panel-copilot" class="workspace-tab-panel" role="tabpanel" aria-labelledby="workspace-tab-copilot">
         <section id="assist-panel" class="assist-panel" aria-labelledby="assist-heading">
@@ -256,6 +264,7 @@
               <div id="assist-result-actions" class="assist-result-actions">
                 <button id="copy-assist-suggestion" class="secondary-action" type="button" hidden>Copy suggestion</button>
                 <button id="reset-assist-request" class="secondary-action" type="button" hidden>Ask another question</button>
+                <button id="clear-assist-response" class="secondary-action danger-action" type="button" hidden>Clear Copilot response…</button>
               </div>
             </section>
 
@@ -267,11 +276,37 @@
           </div>
         </section>
           </div>
-          <div id="workspace-panel-debrief" class="workspace-tab-panel debrief-placeholder" role="tabpanel" aria-labelledby="workspace-tab-debrief" hidden>
-            <div class="debrief-placeholder-icon" aria-hidden="true">✦</div>
-            <h2>Debrief is next</h2>
-            <p>After you stop, this space will turn the finalized local transcript into a reviewable meeting summary, decisions, actions, and open questions.</p>
-            <p class="debrief-placeholder-note">No meeting analysis is generated yet, and nothing is sent to a provider from this tab.</p>
+          <div id="workspace-panel-debrief" class="workspace-tab-panel debrief-panel" role="tabpanel" aria-labelledby="workspace-tab-debrief" hidden>
+            <header class="debrief-header">
+              <div>
+                <p class="debrief-eyebrow">Local meeting memory</p>
+                <h2>Meeting debrief</h2>
+              </div>
+              <span id="debrief-state-badge" class="debrief-state-badge" data-state="empty">No debrief yet</span>
+            </header>
+
+            <section class="debrief-local-boundary" aria-labelledby="debrief-local-boundary-title">
+              <strong id="debrief-local-boundary-title">Generated on this device</strong>
+              <p>Created on this device from finalized original transcript text. Nothing is sent automatically. Portuguese translations stay with the transcript and are not used to create debrief claims.</p>
+            </section>
+
+            <div id="debrief-status" class="debrief-status" role="status" aria-live="polite" aria-atomic="true">
+              <p id="debrief-status-message">Stop a meeting to create a local debrief.</p>
+            </div>
+
+            <div class="debrief-actions" aria-label="Debrief actions">
+              <button id="generate-debrief" class="primary-assist-action debrief-generate" type="button" disabled>Generate local debrief</button>
+              <button id="copy-debrief" class="secondary-action" type="button" disabled>Copy Markdown</button>
+              <button id="save-debrief" class="secondary-action" type="button" disabled>Export Markdown…</button>
+              <button id="clear-debrief" class="secondary-action danger-action" type="button" disabled>Clear debrief…</button>
+              <button id="delete-debrief-source-data" class="secondary-action danger-action" type="button" disabled>Delete debrief source data…</button>
+            </div>
+
+            <div id="debrief-sections" class="debrief-sections" aria-busy="false"></div>
+
+            <footer class="debrief-footer">
+              Review local extracts and observations before sharing. Edits stay in this view. Nothing is emailed, posted, or turned into tasks automatically.
+            </footer>
           </div>
         </aside>
         </div>
@@ -576,6 +611,19 @@
         <footer class="settings-dialog-footer">
           <button id="close-settings" class="primary-dialog-action" type="button">Done</button>
         </footer>
+      </div>
+    </dialog>
+
+    <dialog id="local-delete-dialog" class="local-delete-dialog" aria-labelledby="local-delete-title" aria-describedby="local-delete-message">
+      <div class="local-delete-dialog-content">
+        <div>
+          <h2 id="local-delete-title">Clear local content?</h2>
+          <p id="local-delete-message"></p>
+        </div>
+        <div class="local-delete-dialog-actions">
+          <button id="cancel-local-delete" class="secondary-action" type="button" autofocus>Cancel</button>
+          <button id="confirm-local-delete" class="secondary-action danger-action" type="button">Clear</button>
+        </div>
       </div>
     </dialog>
 

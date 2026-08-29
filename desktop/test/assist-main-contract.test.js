@@ -113,9 +113,9 @@ test("global Assist shortcut only reveals the UI and fake assistance is developm
   assert.match(main, /if \(focusAssist\) mainWindow\.webContents\.send\("meeting:assist-shortcut"\)/);
 });
 
-test("v0.6 check gate includes every meeting-context, assistance, and overlay boundary module", async () => {
+test("v0.7 check gate includes every meeting-context, assistance, overlay, and debrief boundary module", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.6.0");
+  assert.equal(packageJson.version, "0.7.0");
   for (const path of [
     "desktop/main/assist-context.js",
     "desktop/main/assist-protocol.js",
@@ -124,11 +124,14 @@ test("v0.6 check gate includes every meeting-context, assistance, and overlay bo
     "desktop/main/assist-controller.js",
     "desktop/main/meeting-profiles.js",
     "desktop/main/context-pack-store.js",
+    "desktop/main/debrief-context.js",
+    "desktop/main/debrief-extractor.js",
     "desktop/main/overlay-controller.js",
     "desktop/main/overlay-policy.js",
     "desktop/main/overlay-settings-store.js",
     "desktop/main/shortcut-registry.js",
     "desktop/renderer/lib/assist-request-gate.js",
+    "desktop/renderer/lib/debrief-store.js",
     "desktop/renderer/overlay.js",
     "desktop/preload/overlay.cjs"
   ]) assert.match(packageJson.scripts.check, new RegExp(escapeRegex(path)));

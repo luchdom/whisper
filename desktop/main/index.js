@@ -70,6 +70,11 @@ import {
 import { createOverlayController, OverlayControllerError } from "./overlay-controller.js";
 import { createOverlaySettingsStore } from "./overlay-settings-store.js";
 import { createShortcutRegistry } from "./shortcut-registry.js";
+import { DebriefContextBuffer } from "./debrief-context.js";
+import {
+  DEBRIEF_SECTION_IDS,
+  extractLocalDebrief
+} from "./debrief-extractor.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
@@ -95,6 +100,7 @@ const BOOTSTRAP_COMMAND = process.platform === "win32"
 // Startup has an explicit bounded cancel path. The close-ready gate therefore
 // needs only finalization plus shutdown and atomic-file-settle margin.
 const RENDERER_CLOSE_READY_TIMEOUT_MS = STOP_TIMEOUT_MS + 30_000;
+const MAX_DEBRIEF_MARKDOWN_BYTES = 2_000_000;
 // Only messages authored as stable, path-free product copy may cross an IPC
 // handler through publicError. Runtime, filesystem, process, and provider
 // exceptions otherwise collapse to the handler-owned fallback below.
@@ -165,11 +171,18 @@ const backend = new BackendController({
   getVerifiedLaunch: () => backendSetup.getVerifiedLaunch()
 });
 const transcriptFiles = createTranscriptFileService();
+const debriefContext = new DebriefContextBuffer();
 const closeCoordinator = createCloseCoordinator(closeWindowSafely);
 const closeReadyGate = createCloseReadyGate({ timeoutMs: RENDERER_CLOSE_READY_TIMEOUT_MS });
 
 backend.on("event", (event) => {
-  if (event.type === "final_segment") assistController?.ingest(event);
+  if (event.type === "final_segment") {
+    ingestLocalDebriefEvent(event);
+    assistController?.ingest(event);
+  }
+  if (event.type === "session_stopped") {
+    finalizeLocalDebriefSession(event.session_id, event.reason ?? "unknown");
+  }
   overlayController?.ingestBackendEvent(event);
   if (event.type === "session_stopped") endAssistSession(event.session_id);
   if (event.type === "session_stopped") lastSessionStopReason = event.reason ?? null;
@@ -489,8 +502,54 @@ function sendAssistEvent(event) {
   }
 }
 
+function startLocalDebriefSession(sessionId) {
+  try {
+    debriefContext.startSession(sessionId);
+  } catch {
+    // A backend-owned session has already started, so retaining any previous
+    // meeting would risk a cross-meeting debrief. Fail soft for capture while
+    // clearing that stale local context.
+    debriefContext.clear();
+  }
+}
+
+function ingestLocalDebriefEvent(event) {
+  try {
+    debriefContext.ingest(event);
+  } catch {
+    // Local debrief extraction is optional and cannot interrupt transcription,
+    // the overlay, or the renderer's authoritative transcript event stream.
+  }
+}
+
+function getLocalDebriefSessionId() {
+  try {
+    return debriefContext.snapshot()?.sessionId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function finalizeLocalDebriefSession(sessionId, reason) {
+  try {
+    const snapshot = debriefContext.snapshot();
+    if (!snapshot || snapshot.state !== "active") return false;
+    const resolvedSessionId = sessionId ?? snapshot.sessionId;
+    const resolvedReason = typeof reason === "string" && reason.trim()
+      ? reason
+      : "unknown";
+    return debriefContext.finalizeSession(resolvedSessionId, {
+      complete: resolvedReason === "stopped",
+      reason: resolvedReason
+    });
+  } catch {
+    return false;
+  }
+}
+
 async function closeWindowSafely({ shouldQuit }) {
   const windowToClose = mainWindow;
+  const debriefSessionId = getLocalDebriefSessionId();
   if (windowToClose && !windowToClose.isDestroyed()) {
     await waitForRendererCloseReady(windowToClose);
   }
@@ -500,6 +559,10 @@ async function closeWindowSafely({ shouldQuit }) {
       try {
         await backend.stopSession();
       } finally {
+        finalizeLocalDebriefSession(
+          debriefSessionId,
+          lastSessionStopReason ?? "application_closed"
+        );
         endAssistSession(assistController?.getContextSnapshot()?.sessionId);
         // The renderer may be unresponsive or may have timed out before it
         // could update main-owned state. A reopened macOS window must start
@@ -601,6 +664,7 @@ function registerIpc() {
         userDataPath: app.getPath("userData"),
         catalog: modelCatalog
       }));
+      startLocalDebriefSession(engine.session_id);
       meetingInProgress = true;
       overlayController?.beginSession(engine.session_id);
       startAssistSession(engine.session_id, sessionContext);
@@ -649,9 +713,14 @@ function registerIpc() {
 
   ipcMain.handle("meeting:stop", async (event) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    const debriefSessionId = getLocalDebriefSessionId();
     try {
       const hadMeeting = meetingInProgress;
       await backend.stopSession();
+      finalizeLocalDebriefSession(
+        debriefSessionId,
+        lastSessionStopReason ?? "unknown"
+      );
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       meetingInProgress = false;
       successfulStop = hadMeeting && lastSessionStopReason === "stopped";
@@ -665,12 +734,84 @@ function registerIpc() {
     } catch (error) {
       // BackendController tears down an ambiguous sidecar before rejecting. Keep
       // the desktop state retryable even when finalization itself failed.
+      finalizeLocalDebriefSession(
+        debriefSessionId,
+        lastSessionStopReason ?? "stop_failed"
+      );
       meetingInProgress = false;
       successfulStop = false;
       overlayController?.setMeetingState("error");
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       return { ok: false, error: publicError(error, "The transcript could not be finalized normally.") };
     }
+  });
+
+  ipcMain.handle("meeting:debrief-generate", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidDebriefRequestResult();
+    try {
+      const snapshot = debriefContext.snapshot();
+      if (!snapshot) {
+        return { ok: false, error: "No meeting debrief context is available yet." };
+      }
+      if (snapshot.state === "active") {
+        return { ok: false, error: "Stop transcription before generating the local meeting debrief." };
+      }
+      const debrief = extractLocalDebrief(snapshot, { includeCoaching: true });
+      return { ok: true, debrief: sanitizeRendererDebrief(debrief) };
+    } catch {
+      return { ok: false, error: "The local meeting debrief could not be generated." };
+    }
+  });
+
+  ipcMain.handle("meeting:debrief-copy", (event, markdown, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidDebriefRequestResult();
+    try {
+      clipboard.writeText(validateDebriefMarkdown(markdown));
+      return { ok: true };
+    } catch (error) {
+      return debriefMarkdownErrorResult(error, "The meeting debrief could not be copied.");
+    }
+  });
+
+  ipcMain.handle("meeting:debrief-save", async (event, markdown, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidDebriefRequestResult();
+    try {
+      const validatedMarkdown = validateDebriefMarkdown(markdown);
+      const suggestedName = buildDebriefFileName();
+      const defaultPath = settings.transcriptDirectory
+        ? path.join(settings.transcriptDirectory, suggestedName)
+        : suggestedName;
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: "Save Meeting debrief",
+        defaultPath,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        properties: ["createDirectory", "showOverwriteConfirmation"]
+      });
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      const saved = await transcriptFiles.saveManual({
+        filePath: result.filePath,
+        markdown: validatedMarkdown
+      });
+      return { ok: true, canceled: false, fileName: saved.fileName };
+    } catch (error) {
+      return debriefMarkdownErrorResult(
+        error,
+        "The meeting debrief could not be saved. Choose another location and try again."
+      );
+    }
+  });
+
+  ipcMain.handle("meeting:debrief-clear", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidDebriefRequestResult();
+    if (debriefContext.snapshot()?.state === "active") {
+      return { ok: false, error: "Stop transcription before deleting retained debrief data." };
+    }
+    debriefContext.clear();
+    return { ok: true };
   });
 
   ipcMain.handle("meeting:copy", (event, markdown) => {
@@ -1468,6 +1609,72 @@ function assistRequestError(error) {
     ["question_too_large", "The assistance question is too long."]
   ]);
   return messages.get(error?.code) ?? "Assistance could not be started. Local transcription continues normally.";
+}
+
+function sanitizeRendererDebrief(value) {
+  return {
+    schemaVersion: value.schemaVersion,
+    state: value.state,
+    message: value.message,
+    sessionId: value.sessionId,
+    contextRevision: value.contextRevision,
+    complete: value.complete,
+    reason: value.reason,
+    coverage: value.coverage ? { ...value.coverage } : null,
+    sections: Object.fromEntries(DEBRIEF_SECTION_IDS.map((sectionId) => [
+      sectionId,
+      {
+        state: value.sections[sectionId].state,
+        truncated: value.sections[sectionId].truncated,
+        items: value.sections[sectionId].items.map((item) => ({
+          id: item.id,
+          text: item.text,
+          sources: item.sources.map((source) => ({
+            segment_id: source.segment_id,
+            start_ms: source.start_ms,
+            end_ms: source.end_ms
+          })),
+          provenance: item.provenance,
+          edited: item.edited,
+          ...(sectionId === "actions"
+            ? {
+                owner: { state: item.owner.state, value: item.owner.value },
+                due: { state: item.due.state, value: item.due.value }
+              }
+            : {})
+        }))
+      }
+    ]))
+  };
+}
+
+function validateDebriefMarkdown(markdown) {
+  return validateFinalMarkdown(markdown, MAX_DEBRIEF_MARKDOWN_BYTES);
+}
+
+function buildDebriefFileName(date = new Date()) {
+  const timestamp = date.toISOString()
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace("T", "-")
+    .replaceAll(":", "-")
+    .replace(/Z$/, "");
+  return `Meeting debrief-${timestamp}.md`;
+}
+
+function invalidDebriefRequestResult() {
+  return { ok: false, error: "The meeting debrief request contains an unsupported field." };
+}
+
+function debriefMarkdownErrorResult(error, fallback) {
+  if (error instanceof TranscriptFileError) {
+    if (error.code === "invalid_transcript") {
+      return { ok: false, error: "The meeting debrief content is invalid." };
+    }
+    if (error.code === "transcript_too_large") {
+      return { ok: false, error: "The meeting debrief is too large to copy or save safely." };
+    }
+  }
+  return { ok: false, error: fallback };
 }
 
 function invalidAssistRequestResult() {

@@ -4,7 +4,7 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
-Current source release: **v0.6.0**.
+Current source release: **v0.7.0**.
 
 ## Requirements
 
@@ -49,7 +49,7 @@ Only one app instance runs. A second launch shows and focuses the existing windo
 
 ## Meeting workspace and companion overlay
 
-The overt v0.6.0 workspace uses three regions on wide windows: a left setup rail for sources, model/language, meeting profile, and private-context selection; a center live transcript; and a right insight rail with Copilot and Debrief tabs. Between 881 and 1,119 CSS pixels the setup rail moves above the transcript and can collapse while the transcript and insight rail remain side by side. At 880 pixels and below, all regions stack into one column. The tab list supports pointer use plus Arrow Left/Right, Home, and End keyboard navigation.
+The overt v0.7.0 workspace uses three regions on wide windows: a left setup rail for sources, model/language, meeting profile, and private-context selection; a center live transcript; and a right insight rail with Copilot and Debrief tabs. Between 881 and 1,119 CSS pixels the setup rail moves above the transcript and can collapse while the transcript and insight rail remain side by side. At 880 pixels and below, all regions stack into one column. The tab list supports pointer use plus Arrow Left/Right, Home, and End keyboard navigation.
 
 ### Recording permission versus OpenAI consent
 
@@ -117,6 +117,25 @@ The result is kept separate from `TranscriptStore`; it never inserts, replaces, 
 When the operating system accepts it, the global **Ctrl/Cmd+Shift+A** shortcut only reveals the window and focuses the Assist entry point. It never starts capture or submits a request; the in-window control remains available if the shortcut is reserved by the operating system. Within the question field, **Ctrl/Cmd+Enter** submits only when every normal Send condition is already satisfied; editable controls and dialogs retain their normal keyboard behavior elsewhere.
 
 API usage may be billed separately, so Settings and the consent card open only fixed current Privacy, Data controls, and Usage pages and do not hardcode a price. This workspace has not performed a live OpenAI request, and the Assist runtime remains unverified on macOS hardware.
+
+## Local post-meeting debrief
+
+After the meeting stops, the **Debrief** tab enables **Generate local debrief**. The user must choose it explicitly; generation is never automatic. Its six fixed sections are **Summary**, **Decisions**, **Action items**, **Open questions and risks**, **Important objections and questions**, and **Coaching observations**. The extractor uses finalized original transcript text only. Portuguese translations remain intact in `TranscriptStore` and bilingual transcript exports, but they do not enter generated debrief claims or generated source evidence.
+
+This path does not use a language model, provider, network request, OpenAI consent or credential, meeting profile, or private context pack. It cannot send email, post messages, create tasks, or perform another external action. Hosted Copilot and the local debrief are separate features even though they share the insight rail.
+
+Main owns a dedicated `DebriefContextBuffer`. It starts only after the backend has started successfully, accepts finalized segments and newer revisions for that exact session, and retains the stopped context after either a complete or incomplete stop. A successful new meeting clears the previous meeting and starts a new buffer. **Delete debrief source data…** explicitly clears the current retained buffer and renderer draft, after which regeneration is unavailable. The buffer and renderer draft are memory-only and disappear when the app exits; an explicit export creates a separate user-owned Markdown file.
+
+The renderer owns the ephemeral editable `DebriefStore`. It preserves local or manual provenance, exact source timestamps, and current speaker aliases. Generated items can be edited or removed; this release exposes no Add-item control. Action-item owner and due values are shown as **Stated**, **Proposed**, or **Not stated**; `Not stated` maps to the internal `unknown` value, and the UI never upgrades a proposal into a confirmed assignment. The bounded store recognizes **empty**, **manual**, **generating**, **ready**, **partial**, and **failed** states. An interrupted meeting, omitted context window, or extractor/source limit remains visible as partial.
+
+Choose **Copy Markdown** or **Export Markdown…** to keep a result. Copy and save reject content larger than 2 MB. The native save dialog defaults to the configured transcript directory when one exists, but does not auto-save a debrief. Generating again while a draft exists requires confirmation before its edits or removed items are replaced. **Clear transcript view…** hides or restores transcript presentation without deleting debrief evidence; **Clear Copilot response…** affects only the current Copilot result; **Clear debrief…** removes only the renderer draft and permits generation again from the retained source; and **Delete debrief source data…** clears the retained source plus draft and disables regeneration. Existing saved Markdown files remain user-owned and are never silently deleted.
+
+The bounds are intentionally explicit:
+
+- Main retains at most 4,000 finalized segments and 1,000,000 original transcript characters.
+- The extractor examines at most 20,000 statements, returns at most 12 generated items per section, and attaches at most 32 sources to one item.
+- The renderer editor accepts at most 50 items per section and 4,000 characters per item.
+- Copy and save accept at most 2,000,000 UTF-8 bytes of Markdown.
 
 ## Source setup
 
@@ -229,6 +248,7 @@ The app remains usable with only one source selected. If a selected input is den
 - Copy and save operations export finalized transcript text only.
 - Hosted assistance is Off by default. Provider/profile selection, private-context management, key import, setup, and context review make no provider request; only an explicit consent-gated Send can transmit the shown built-in profile, meeting-start-selected private packs, bounded finalized transcript, and question.
 - Assistance output and state remain separate from the transcript, copy, Markdown export, and automatic-save paths.
+- The local debrief uses finalized original text only and does not enter the provider, credential, consent, meeting-profile, or private-context path. Its context and renderer edits are memory-only until explicit Markdown export.
 - The overlay defaults to an accessible opaque mode. Private mode is an explicit non-guarantee privacy aid; it is never described as hidden from meeting software or invisible to capture.
 - The overlay receives only two bounded finalized segments and the latest bounded suggestion. It receives no raw audio, draft transcript, private-pack body, API key, provider question, or provider-send capability.
 - Starting a successful new meeting replaces the current in-memory transcript. A failed model or permission retry restores the prior transcript, but text worth retaining should still be saved before another meeting.
@@ -241,6 +261,8 @@ pnpm run check
 pnpm run pack
 ```
 
-The unit and contract suites cover streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, immutable meeting-profile selection, encrypted context-pack revisions and limits, content-free request previews, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, renderer stale-result isolation, the three-region responsive workspace, per-start permission dialog, overlay state/projection bounds, persisted-settings schema, independent shortcut registration/retry/reset, IPC/window hardening, and display recovery.
+The unit and contract suites cover streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, immutable meeting-profile selection, encrypted context-pack revisions and limits, content-free request previews, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, renderer stale-result isolation, the three-region responsive workspace, per-start permission dialog, overlay state/projection bounds, persisted-settings schema, independent shortcut registration/retry/reset, IPC/window hardening, display recovery, debrief session lifecycle and revision replacement, deterministic extraction and evidence limits, renderer edit/provenance rules, source validation, independent clear actions, and bounded copy/export.
 
 The v0.6.0 Windows manual runtime acceptance passed in an isolated source app at 1440, 1120, 880, and 760-pixel widths with no workspace overflow. It verified the separate focused permission dialog, rendered Ready/Private/Accessible overlay states, the exact main-owned private-mode disclosure, 80% opacity with content protection and Windows taskbar exclusion, persisted settings after restart, non-persisted click-through with Show recovery, and restoration to opacity 1 with content protection/taskbar exclusion disabled in Accessible mode. Some non-recovery accelerators were reserved by the operating system and were truthfully reported as unavailable while independent shortcuts remained usable. No live OpenAI request has been run for this release, and actual macOS `safeStorage`, menu-bar, login-item, capture, content protection, always-on-top, global-shortcut, overlay, and Assist behavior remains In Review until run on hardware.
+
+The v0.7.0 local debrief core passed 30 focused tests before integration. A synthetic 60-minute, 4,000-segment Windows benchmark extracted the bounded result in about 65 ms and reported partial when an evidence limit was reached. The Windows implementation has local validation, but this benchmark does not establish real-meeting debrief quality. A real 60-minute meeting still needs accuracy, speaker-attribution, false-positive, and exported-file privacy review. Actual macOS debrief lifecycle, editing, source navigation, copy, and export behavior also remains In Review. A live OpenAI request is neither used nor relevant to the local debrief path.

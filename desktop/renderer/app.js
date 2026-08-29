@@ -11,6 +11,8 @@ import { SessionEventGate } from "./lib/session-event-gate.js";
 import { SerialTaskQueue } from "./lib/serial-task-queue.js";
 import { StartAttemptCancelled, StartAttemptGate } from "./lib/start-attempt.js";
 import { TranscriptStore, formatTimestamp, getTrackLabel } from "./lib/transcript-store.js";
+import { DEBRIEF_SECTION_IDS, DebriefStore } from "./lib/debrief-store.js";
+import { isDebriefExtractDerivedFromOriginal } from "../shared/debrief-text.js";
 import {
   formatDownloadBytes,
   getEffectiveLanguage,
@@ -69,6 +71,22 @@ const CONTEXT_KIND_LABELS = Object.freeze({
 });
 const ASSIST_PROVIDER_LINK_IDS = new Set(["privacy", "data-controls", "usage"]);
 const ASSIST_CREDENTIAL_STATES = new Set(["absent", "configured", "invalid", "unreadable"]);
+const DEBRIEF_SECTION_PRESENTATION = Object.freeze({
+  summary: Object.freeze({ title: "Summary", empty: "No extractive summary was identified." }),
+  decisions: Object.freeze({ title: "Decisions", empty: "No explicit decisions were identified." }),
+  actions: Object.freeze({ title: "Action items", empty: "No explicit action items were identified." }),
+  open_questions_risks: Object.freeze({ title: "Open questions and risks", empty: "No explicit open questions or risks were identified." }),
+  objections: Object.freeze({ title: "Important objections and questions", empty: "No explicit objections or important questions were identified." }),
+  coaching: Object.freeze({ title: "Coaching observations", empty: "No local coaching observation was available." })
+});
+const DEBRIEF_STATE_PRESENTATION = Object.freeze({
+  empty: Object.freeze({ label: "No debrief yet", tone: "empty" }),
+  manual: Object.freeze({ label: "Local draft", tone: "manual" }),
+  generating: Object.freeze({ label: "Generating", tone: "generating" }),
+  ready: Object.freeze({ label: "Ready for review", tone: "ready" }),
+  partial: Object.freeze({ label: "Partial — review coverage", tone: "partial" }),
+  failed: Object.freeze({ label: "Couldn’t create debrief", tone: "failed" })
+});
 const INITIAL_ENGINE_SETUP = Object.freeze({
   state: "checking",
   python: Object.freeze({ version: null, minimum: "3.12", supportedSeries: "3.12.x" }),
@@ -84,6 +102,7 @@ const assistStatusGate = new AssistStatusGenerationGate();
 const startGate = new StartAttemptGate();
 const autoSaveRefreshQueue = new SerialTaskQueue();
 const transcript = new TranscriptStore();
+const debrief = new DebriefStore();
 const segmentNodes = new Map();
 const announcedFinalIds = new Set();
 
@@ -116,9 +135,11 @@ const elements = {
   transcriptContent: byId("transcript-content"),
   transcriptAnnouncement: byId("transcript-announcement"),
   emptyTranscript: byId("empty-transcript"),
+  clearedTranscript: byId("cleared-transcript"),
   privacyNote: byId("privacy-note"),
   copy: byId("copy-transcript"),
   save: byId("save-transcript"),
+  clearTranscriptView: byId("clear-transcript-view"),
   settingsButton: byId("open-settings"),
   overlayToggle: byId("toggle-overlay"),
   settingsDialog: byId("settings-dialog"),
@@ -222,6 +243,7 @@ const elements = {
   assistResultContent: byId("assist-result-content"),
   assistCopySuggestion: byId("copy-assist-suggestion"),
   assistResetRequest: byId("reset-assist-request"),
+  assistClearResponse: byId("clear-assist-response"),
   assistDismiss: byId("dismiss-assist"),
   assistCancel: byId("cancel-assist"),
   assistSend: byId("send-assist"),
@@ -236,6 +258,21 @@ const elements = {
   workspaceTabs: [byId("workspace-tab-copilot"), byId("workspace-tab-debrief")],
   workspaceCopilotPanel: byId("workspace-panel-copilot"),
   workspaceDebriefPanel: byId("workspace-panel-debrief"),
+  debriefTabIndicator: byId("debrief-tab-indicator"),
+  debriefStateBadge: byId("debrief-state-badge"),
+  debriefStatus: byId("debrief-status"),
+  debriefStatusMessage: byId("debrief-status-message"),
+  debriefGenerate: byId("generate-debrief"),
+  debriefCopy: byId("copy-debrief"),
+  debriefSave: byId("save-debrief"),
+  debriefClear: byId("clear-debrief"),
+  debriefDeleteSourceData: byId("delete-debrief-source-data"),
+  debriefSections: byId("debrief-sections"),
+  localDeleteDialog: byId("local-delete-dialog"),
+  localDeleteTitle: byId("local-delete-title"),
+  localDeleteMessage: byId("local-delete-message"),
+  localDeleteCancel: byId("cancel-local-delete"),
+  localDeleteConfirm: byId("confirm-local-delete"),
   sessionConsentDialog: byId("session-consent-dialog"),
   sessionConsentCloseTop: byId("close-session-consent-top"),
   sessionConsentCancel: byId("cancel-session-consent"),
@@ -302,6 +339,13 @@ let overlayStatusPromise = null;
 let overlayBusy = false;
 let overlayFeedback = null;
 let setupRailCollapsed = false;
+let transcriptViewCleared = false;
+let transcriptSessionId = null;
+let debriefContextAvailable = false;
+let debriefGenerationPromise = null;
+let debriefFeedback = null;
+let debriefSourceHighlightTimer = null;
+let localDeleteRequest = null;
 
 const capture = new CaptureController({
   bridge,
@@ -317,6 +361,7 @@ elements.action.addEventListener("click", () => {
 });
 elements.copy.addEventListener("click", () => void copyTranscript());
 elements.save.addEventListener("click", () => void saveTranscriptCopy());
+elements.clearTranscriptView.addEventListener("click", () => void toggleTranscriptView());
 elements.sourceSystem.addEventListener("change", handleSourceSelection);
 elements.sourceMicrophone.addEventListener("change", handleSourceSelection);
 elements.model.addEventListener("change", () => void changeModel());
@@ -372,6 +417,7 @@ elements.assistUseLatestContext.addEventListener("click", () => void useLatestAs
 elements.assistKeepAnswer.addEventListener("click", keepAssistAnswer);
 elements.assistCopySuggestion.addEventListener("click", () => void copyAssistSuggestion());
 elements.assistResetRequest.addEventListener("click", resetAssistRequest);
+elements.assistClearResponse.addEventListener("click", () => void clearAssistResponse());
 elements.assistContextCloseTop.addEventListener("click", closeAssistContextReview);
 elements.assistContextBack.addEventListener("click", closeAssistContextReview);
 elements.assistContextUse.addEventListener("click", useReviewedAssistContext);
@@ -379,6 +425,13 @@ for (const tab of elements.workspaceTabs) {
   tab.addEventListener("click", () => setWorkspaceTab(tab.id.endsWith("debrief") ? "debrief" : "copilot"));
   tab.addEventListener("keydown", handleWorkspaceTabKeydown);
 }
+elements.debriefGenerate.addEventListener("click", () => void generateLocalDebrief());
+elements.debriefCopy.addEventListener("click", () => void copyDebriefMarkdown());
+elements.debriefSave.addEventListener("click", () => void saveDebriefMarkdown());
+elements.debriefClear.addEventListener("click", () => void clearDebrief());
+elements.debriefDeleteSourceData.addEventListener("click", () => void deleteDebriefSourceData());
+elements.localDeleteCancel.addEventListener("click", () => resolveLocalDeleteRequest(false));
+elements.localDeleteConfirm.addEventListener("click", () => resolveLocalDeleteRequest(true));
 elements.settingsButton.addEventListener("click", () => openSettings());
 elements.overlayToggle.addEventListener("click", () => void toggleOverlayVisibility());
 elements.setupRailToggle.addEventListener("click", toggleSetupRail);
@@ -407,6 +460,13 @@ elements.sessionConsentDialog.addEventListener("close", () => {
   if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
 });
 elements.contextPacksDialog.addEventListener("close", () => elements.manageContextPacks.focus());
+elements.localDeleteDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  resolveLocalDeleteRequest(false);
+});
+elements.localDeleteDialog.addEventListener("close", () => {
+  if (localDeleteRequest) resolveLocalDeleteRequest(false, { close: false });
+});
 elements.assistContextDialog.addEventListener("close", () => {
   if (assistExpanded && !elements.assistReviewContext.disabled) elements.assistReviewContext.focus();
 });
@@ -446,6 +506,7 @@ bridge.onBeforeClose(() => {
 renderSession();
 renderTranscript();
 renderAssist();
+renderDebrief();
 void initialize();
 
 async function initialize() {
@@ -1001,6 +1062,8 @@ async function startSession(generation) {
   }
 
   const previousTranscript = transcript.snapshot();
+  const previousTranscriptViewCleared = transcriptViewCleared;
+  const previousTranscriptSessionId = transcriptSessionId;
   const previousTranslationRuntimeState = translationRuntimeState;
   let transcriptReplaced = false;
   let assistSessionId = null;
@@ -1031,10 +1094,22 @@ async function startSession(generation) {
     assistSessionId = startResult.engine?.session_id;
     eventGate.activate(assistSessionId);
     beginAssistMeeting(assistSessionId);
+    debrief.clear();
+    debriefContextAvailable = false;
+    debriefFeedback = null;
+    transcriptSessionId = typeof assistSessionId === "string" ? assistSessionId : null;
     transcript.reset();
+    // Main has accepted a new backend-owned meeting and replaced its retained
+    // debrief context. Do not show the previous meeting's draft beside the new
+    // transcript, even if native capture later fails and the transcript view
+    // itself is restored for recovery.
+    debrief.clear();
+    debriefFeedback = null;
+    transcriptViewCleared = false;
     announcedFinalIds.clear();
     transcriptReplaced = true;
     renderTranscript();
+    renderDebrief();
     await capture.start(selection, { signal: startSignal });
     assertCurrentStart(generation);
     state.markRecording();
@@ -1051,8 +1126,11 @@ async function startSession(generation) {
     activeAssistSelection = null;
     if (transcriptReplaced) {
       transcript.restore(previousTranscript);
+      transcriptViewCleared = previousTranscriptViewCleared;
+      transcriptSessionId = previousTranscriptSessionId;
       announcedFinalIds.clear();
       renderTranscript();
+      renderDebrief();
     }
     setTranslationRuntimeState(previousTranslationRuntimeState);
     if (error instanceof StartAttemptCancelled || error instanceof CaptureStartCancelled || startGate.closing) {
@@ -1089,6 +1167,7 @@ async function performStop() {
   let stopError = null;
   let stopCompleted = false;
   let stoppedSuccessfully = false;
+  const shouldGenerateDebrief = backendSessionStarted;
 
   try {
     // Capture stops and drains its final PCM packet before the backend receives stop.
@@ -1124,7 +1203,13 @@ async function performStop() {
     // for those queued events and keep the active session gate open until the
     // final snapshot is visible, including when final inference was incomplete.
     await new Promise((resolve) => setTimeout(resolve, 0));
+  } else if (shouldGenerateDebrief) {
+    // An ambiguous or incomplete backend stop can still have queued finalized
+    // segments. Let those renderer events reconcile before asking main for the
+    // bounded local draft.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  if (shouldGenerateDebrief) debriefContextAvailable = true;
   if (stoppedSuccessfully && !pendingStopFailure && !stopError && transcript.hasFinalized()) {
     autoSaveResult = await saveFinalTranscriptAutomatically().catch(() => ({
       ok: false,
@@ -1149,6 +1234,7 @@ async function performStop() {
     );
   }
   renderSession();
+  renderDebrief();
   void refreshAssistStatus();
 }
 
@@ -1451,11 +1537,17 @@ function renderTranscript() {
     elements.transcriptContent.append(node);
   }
 
-  elements.emptyTranscript.hidden = segments.length > 0;
-  elements.transcriptContent.hidden = segments.length === 0;
+  elements.emptyTranscript.hidden = segments.length > 0 || transcriptViewCleared;
+  elements.clearedTranscript.hidden = !transcriptViewCleared;
+  elements.transcriptContent.hidden = segments.length === 0 || transcriptViewCleared;
   const hasFinalized = transcript.hasFinalized();
   elements.copy.disabled = !hasFinalized;
   elements.save.disabled = !hasFinalized;
+  elements.clearTranscriptView.disabled = segments.length === 0;
+  elements.clearTranscriptView.textContent = transcriptViewCleared
+    ? "Restore transcript view"
+    : "Clear transcript view…";
+  elements.clearTranscriptView.setAttribute("aria-pressed", String(transcriptViewCleared));
   if (nearBottom) elements.transcriptScroll.scrollTop = elements.transcriptScroll.scrollHeight;
 }
 
@@ -1560,6 +1652,9 @@ async function settleSpeakerRenameBeforeTransition() {
   editingSegmentId = null;
   editingSpeakerId = null;
   renderTranscript();
+  if (renamed) {
+    renderDebrief();
+  }
   if (renamed) await refreshAutoSaveAfterSpeakerRename();
 }
 
@@ -1603,6 +1698,7 @@ async function commitSpeakerRename(value) {
   editingSegmentId = null;
   editingSpeakerId = null;
   renderTranscript();
+  renderDebrief();
   segmentNodes.get(segmentId)?.querySelector(".speaker-label-button")?.focus();
   elements.transcriptAnnouncement.textContent = `${previousAlias} renamed to ${nextAlias}.`;
 
@@ -1664,6 +1760,522 @@ async function saveFinalTranscriptAutomatically() {
   const result = await bridge.autoSave(transcript.toMarkdown());
   if (result?.ok && !result.skipped) autoSaveCreated = true;
   return result;
+}
+
+async function toggleTranscriptView() {
+  if (transcriptViewCleared) {
+    transcriptViewCleared = false;
+    renderTranscript();
+    showAlert("Transcript view restored.", "success");
+    return;
+  }
+
+  const confirmed = await confirmLocalDeletion({
+    title: "Clear transcript view?",
+    message: "This hides transcript text in this window without deleting the underlying local text used by debrief sources. The debrief, Copilot response, private context packs, and any saved Markdown files remain unchanged.",
+    confirmLabel: "Clear view"
+  });
+  if (!confirmed) return;
+  transcriptViewCleared = true;
+  renderTranscript();
+  showAlert("Transcript text is hidden from this view. Use Restore transcript view to show it again.", "success");
+}
+
+async function generateLocalDebrief() {
+  if (debriefGenerationPromise || !debriefContextAvailable || state.active) {
+    return debriefGenerationPromise;
+  }
+  const currentDocument = debrief.snapshot();
+  if (shouldConfirmDebriefRegeneration(currentDocument)) {
+    const confirmed = await confirmLocalDeletion({
+      title: "Replace this debrief?",
+      message: "Generating again replaces the current local debrief, including edits and removed items. The transcript, retained local source data, Copilot response, private context packs, and any Markdown files you already saved remain unchanged.",
+      confirmLabel: "Replace and generate"
+    });
+    if (!confirmed) return null;
+    if (debriefGenerationPromise || !debriefContextAvailable || state.active) {
+      return debriefGenerationPromise;
+    }
+  }
+  const sourceIndex = createTranscriptSourceIndex();
+  debriefFeedback = null;
+  debrief.beginGeneration("Creating a local debrief from finalized original transcript text.");
+  renderDebrief();
+
+  const operation = (async () => {
+    try {
+      if (typeof bridge?.generateLocalDebrief !== "function") {
+        throw new Error("Local debrief generation is unavailable in this build.");
+      }
+      const result = await bridge.generateLocalDebrief();
+      if (!result?.ok || !result.debrief) {
+        throw new Error(result?.error || "The local meeting debrief could not be generated.");
+      }
+      assertOriginalOnlyLocalDebrief(result.debrief, sourceIndex);
+      debrief.loadDraft(result.debrief, {
+        sourceValidator: (segmentId) => presentDebriefSource(sourceIndex.get(String(segmentId)))
+      });
+      debriefFeedback = null;
+    } catch (error) {
+      const message = error?.message || "The local meeting debrief could not be generated.";
+      debrief.markFailed(message);
+      debriefFeedback = { text: message, tone: "error" };
+    }
+  })();
+
+  debriefGenerationPromise = operation.finally(() => {
+    debriefGenerationPromise = null;
+    renderDebrief();
+  });
+  return debriefGenerationPromise;
+}
+
+function shouldConfirmDebriefRegeneration(document) {
+  return document.sessionId !== null
+    || DEBRIEF_SECTION_IDS.some((sectionId) => document.sections[sectionId].items.length > 0);
+}
+
+function createTranscriptSourceIndex() {
+  return new Map(transcript.getFinalized().map((segment) => [String(segment.id), {
+    id: String(segment.id),
+    start_ms: segment.start_ms,
+    end_ms: segment.end_ms,
+    label: transcript.getSpeakerLabel(segment),
+    originalText: segment.text
+  }]));
+}
+
+function presentDebriefSource(source) {
+  return source
+    ? {
+        id: source.id,
+        start_ms: source.start_ms,
+        end_ms: source.end_ms,
+        label: source.label
+      }
+    : null;
+}
+
+function resolveTranscriptDebriefSource(segmentId) {
+  const debriefSessionId = debrief.snapshot().sessionId;
+  if (debriefSessionId !== null && debriefSessionId !== transcriptSessionId) return null;
+  const segment = transcript.getFinalized().find(({ id }) => String(id) === String(segmentId));
+  return segment
+    ? {
+        id: String(segment.id),
+        start_ms: segment.start_ms,
+        end_ms: segment.end_ms,
+        label: transcript.getSpeakerLabel(segment)
+      }
+    : null;
+}
+
+function resolveDebriefSource(segmentId) {
+  return resolveTranscriptDebriefSource(segmentId);
+}
+
+function assertOriginalOnlyLocalDebrief(value, sourceIndex) {
+  if (!value || typeof value !== "object" || !value.sections || typeof value.sections !== "object") {
+    throw new TypeError("The local debrief response is invalid.");
+  }
+  if (typeof value.sessionId !== "string" || value.sessionId !== transcriptSessionId) {
+    throw new TypeError("The local debrief does not match the current transcript session.");
+  }
+  for (const sectionId of DEBRIEF_SECTION_IDS) {
+    const items = value.sections[sectionId]?.items;
+    if (!Array.isArray(items)) throw new TypeError(`The local debrief section is invalid: ${sectionId}`);
+    for (const item of items) {
+      if (!item || typeof item.text !== "string" || !["local_extractive", "local_observation"].includes(item.provenance)) {
+        throw new TypeError("The debrief response was not produced by the local extractor.");
+      }
+      if (item.provenance !== "local_extractive") continue;
+      const linkedToOriginal = Array.isArray(item.sources) && item.sources.some((source) => {
+        const segment = sourceIndex.get(String(source?.segment_id));
+        return segment && isDebriefExtractDerivedFromOriginal(item.text, segment.originalText);
+      });
+      if (!linkedToOriginal) {
+        throw new TypeError("A local debrief claim could not be verified against original transcript text.");
+      }
+    }
+  }
+}
+
+function renderDebrief() {
+  const document = debrief.snapshot();
+  const presentation = DEBRIEF_STATE_PRESENTATION[document.state] ?? DEBRIEF_STATE_PRESENTATION.failed;
+  const generating = document.state === "generating";
+  const hasDebriefContent = debrief.hasItems();
+  const hasGeneratedDocument = document.sessionId !== null;
+  const readyForFirstGeneration = document.state === "empty"
+    && debriefContextAvailable
+    && !hasGeneratedDocument;
+  const canGenerate = debriefContextAvailable && document.state !== "generating" && !state.active;
+
+  elements.debriefStateBadge.textContent = presentation.label;
+  elements.debriefStateBadge.dataset.state = presentation.tone;
+  elements.debriefStatusMessage.textContent = debriefFeedback?.text
+    ?? (readyForFirstGeneration
+      ? "Finalized local source data is available. Choose Generate local debrief when you are ready."
+      : null)
+    ?? (document.state === "empty"
+      ? hasGeneratedDocument
+        ? document.message
+        : "Debrief is available after transcription stops."
+      : document.message ?? presentation.label);
+  elements.debriefStatus.dataset.tone = debriefFeedback?.tone ?? presentation.tone;
+  elements.debriefStatus.setAttribute("role", debriefFeedback?.tone === "error" ? "alert" : "status");
+  elements.debriefStatus.setAttribute("aria-live", debriefFeedback?.tone === "error" ? "assertive" : "polite");
+  elements.debriefSections.setAttribute("aria-busy", String(document.state === "generating"));
+  elements.debriefGenerate.disabled = !canGenerate;
+  elements.debriefCopy.disabled = generating || !hasDebriefContent;
+  elements.debriefSave.disabled = generating || !hasDebriefContent;
+  elements.debriefClear.disabled = ["empty", "generating"].includes(document.state)
+    || backendSessionStarted;
+  elements.debriefClear.title = backendSessionStarted
+    ? "Stop the meeting before clearing its local debrief buffer."
+    : "Clear only the visible local debrief draft.";
+  elements.debriefDeleteSourceData.disabled = !debriefContextAvailable
+    || document.state === "generating"
+    || backendSessionStarted;
+  elements.debriefDeleteSourceData.title = backendSessionStarted
+    ? "Stop the meeting before deleting retained local debrief source data."
+    : "Delete the retained local source data used to generate this meeting debrief.";
+
+  const hasAvailability = debriefContextAvailable
+    || ["ready", "partial", "manual", "failed"].includes(document.state);
+  elements.debriefTabIndicator.hidden = !hasAvailability || activeWorkspaceTab === "debrief";
+  const availabilityLabel = readyForFirstGeneration
+    ? "Available"
+    : presentation.label;
+  elements.debriefTabIndicator.textContent = availabilityLabel;
+  elements.debriefTabIndicator.title = availabilityLabel;
+
+  const sections = DEBRIEF_SECTION_IDS.map((sectionId) => (
+    createDebriefSectionNode(sectionId, document.sections[sectionId], document.state === "generating")
+  ));
+  elements.debriefSections.replaceChildren(...sections);
+}
+
+function createDebriefSectionNode(sectionId, section, generating) {
+  const presentation = DEBRIEF_SECTION_PRESENTATION[sectionId];
+  const container = document.createElement("section");
+  container.className = "debrief-section";
+  container.dataset.section = sectionId;
+
+  const header = document.createElement("header");
+  header.className = "debrief-section-header";
+  const title = document.createElement("h3");
+  title.textContent = presentation.title;
+  header.append(title);
+  container.append(header);
+
+  if (section.items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "debrief-section-empty";
+    empty.textContent = section.state === "not_requested"
+      ? "Optional coaching was not requested for this meeting."
+      : presentation.empty;
+    container.append(empty);
+  } else {
+    const list = document.createElement("div");
+    list.className = "debrief-item-list";
+    for (const item of section.items) list.append(createDebriefItemNode(sectionId, item, generating));
+    container.append(list);
+  }
+
+  if (section.truncated) {
+    const truncated = document.createElement("p");
+    truncated.className = "debrief-section-warning";
+    truncated.textContent = "This local section reached its evidence limit. Review the transcript for omitted context.";
+    container.append(truncated);
+  }
+  return container;
+}
+
+function createDebriefItemNode(sectionId, item, generating) {
+  const card = document.createElement("article");
+  card.className = "debrief-item";
+  card.dataset.itemId = item.id;
+
+  const meta = document.createElement("div");
+  meta.className = "debrief-item-meta";
+  const provenance = document.createElement("span");
+  provenance.className = "debrief-provenance";
+  provenance.textContent = formatDebriefProvenance(item);
+  meta.append(provenance);
+
+  const text = document.createElement("textarea");
+  text.className = "debrief-item-text";
+  text.rows = Math.min(6, Math.max(2, Math.ceil(item.text.length / 52)));
+  text.maxLength = 4_000;
+  text.value = item.text;
+  text.disabled = generating;
+  text.setAttribute("aria-label", `Edit ${DEBRIEF_SECTION_PRESENTATION[sectionId].title} item`);
+
+  card.append(meta, text);
+  if (sectionId === "actions") card.append(createDebriefActionFields(item, generating));
+
+  const sources = document.createElement("div");
+  sources.className = "debrief-sources";
+  sources.setAttribute("aria-label", "Transcript sources");
+  if (item.sources.length === 0) {
+    const noSource = document.createElement("span");
+    noSource.className = "debrief-no-source";
+    noSource.textContent = "No transcript source · manual item";
+    sources.append(noSource);
+  } else {
+    for (const source of item.sources) sources.append(createDebriefSourceChip(source));
+  }
+  card.append(sources);
+
+  const actions = document.createElement("div");
+  actions.className = "debrief-item-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "secondary-action";
+  save.textContent = "Save edits";
+  save.disabled = generating;
+  save.addEventListener("click", () => saveDebriefItemEdits(sectionId, item.id, card));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "debrief-text-action danger-action";
+  remove.textContent = "Remove";
+  remove.disabled = generating;
+  remove.addEventListener("click", () => void removeDebriefItem(sectionId, item.id));
+  actions.append(save, remove);
+  card.append(actions);
+  return card;
+}
+
+function createDebriefActionFields(item, generating) {
+  const fields = document.createElement("div");
+  fields.className = "debrief-action-fields";
+  fields.append(
+    createDebriefActionField("owner", "Owner", item.owner, generating),
+    createDebriefActionField("due", "Due", item.due, generating)
+  );
+  return fields;
+}
+
+function createDebriefActionField(fieldId, labelText, field, generating) {
+  const label = document.createElement("label");
+  label.className = "debrief-action-field";
+  const title = document.createElement("span");
+  title.textContent = labelText;
+  const controls = document.createElement("span");
+  controls.className = "debrief-action-field-controls";
+  const certainty = document.createElement("select");
+  certainty.className = `debrief-${fieldId}-state`;
+  certainty.disabled = generating;
+  certainty.setAttribute("aria-label", `${labelText} certainty: stated, proposed, or not stated`);
+  for (const [value, text] of [["stated", "Stated"], ["proposed", "Proposed"], ["unknown", "Not stated"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = field.state === value;
+    certainty.append(option);
+  }
+  const value = document.createElement("input");
+  value.className = `debrief-${fieldId}-value`;
+  value.type = "text";
+  value.maxLength = 128;
+  value.value = field.value ?? "";
+  value.placeholder = fieldId === "owner" ? "Name" : "Date or timing";
+  value.disabled = generating || field.state === "unknown";
+  value.setAttribute("aria-label", `${labelText} value`);
+  certainty.addEventListener("change", () => {
+    value.disabled = certainty.value === "unknown";
+    if (certainty.value === "unknown") value.value = "";
+  });
+  controls.append(certainty, value);
+  label.append(title, controls);
+  return label;
+}
+
+function createDebriefSourceChip(source) {
+  const resolved = resolveDebriefSource(source.segment_id);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "debrief-source-chip";
+  if (!resolved) {
+    button.disabled = true;
+    button.textContent = `${formatTimestamp(source.start_ms)} · Source unavailable`;
+    button.setAttribute("aria-label", `Transcript source at ${formatTimestamp(source.start_ms)} is unavailable`);
+    return button;
+  }
+  const time = resolved.end_ms > resolved.start_ms
+    ? `${formatTimestamp(resolved.start_ms)}–${formatTimestamp(resolved.end_ms)}`
+    : formatTimestamp(resolved.start_ms);
+  button.textContent = `${time} · ${resolved.label}`;
+  button.title = `Open ${resolved.label} in the transcript at ${time}`;
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("click", () => focusDebriefSource(resolved.id));
+  return button;
+}
+
+function formatDebriefProvenance(item) {
+  const base = {
+    local_extractive: "Local extract",
+    local_observation: "Local observation",
+    manual: "Edited by you",
+    hosted_generated: "Hosted draft"
+  }[item.provenance] ?? "Local draft";
+  return item.edited && item.provenance !== "manual" ? `${base} · Edited` : base;
+}
+
+function saveDebriefItemEdits(sectionId, itemId, card) {
+  const patch = { text: card.querySelector(".debrief-item-text").value };
+  if (sectionId === "actions") {
+    patch.owner = readDebriefActionField(card, "owner");
+    patch.due = readDebriefActionField(card, "due");
+  }
+  try {
+    debrief.updateItem(sectionId, itemId, patch, { sourceValidator: resolveDebriefSource });
+    debriefFeedback = { text: "Local debrief edits saved.", tone: "success" };
+  } catch (error) {
+    debriefFeedback = { text: error?.message || "The debrief edit could not be saved.", tone: "error" };
+  }
+  renderDebrief();
+}
+
+function readDebriefActionField(card, fieldId) {
+  const state = card.querySelector(`.debrief-${fieldId}-state`).value;
+  const value = card.querySelector(`.debrief-${fieldId}-value`).value.trim();
+  return { state, value: state === "unknown" ? null : value };
+}
+
+async function removeDebriefItem(sectionId, itemId) {
+  const confirmed = await confirmLocalDeletion({
+    title: "Remove debrief item?",
+    message: "This removes only this item from the local debrief. The transcript, Copilot response, private context packs, and saved Markdown files remain unchanged.",
+    confirmLabel: "Remove item"
+  });
+  if (!confirmed) return;
+  debrief.removeItem(sectionId, itemId);
+  debriefFeedback = { text: "Debrief item removed from this view.", tone: "success" };
+  renderDebrief();
+}
+
+function focusDebriefSource(segmentId) {
+  const node = segmentNodes.get(String(segmentId));
+  if (!node) return;
+  transcriptViewCleared = false;
+  renderTranscript();
+  requestAnimationFrame(() => {
+    const sourceNode = segmentNodes.get(String(segmentId));
+    if (!sourceNode) return;
+    if (debriefSourceHighlightTimer) clearTimeout(debriefSourceHighlightTimer);
+    for (const segmentNode of segmentNodes.values()) segmentNode.classList.remove("source-highlight");
+    sourceNode.classList.add("source-highlight");
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    sourceNode.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+    sourceNode.focus({ preventScroll: true });
+    debriefSourceHighlightTimer = setTimeout(() => {
+      sourceNode.classList.remove("source-highlight");
+      debriefSourceHighlightTimer = null;
+    }, 2_400);
+  });
+}
+
+function buildDebriefMarkdown() {
+  return debrief.toMarkdown({ sourceResolver: resolveDebriefSource });
+}
+
+async function copyDebriefMarkdown() {
+  if (["empty", "generating"].includes(debrief.snapshot().state)) return;
+  try {
+    const result = await bridge.copyDebrief(buildDebriefMarkdown());
+    if (!result?.ok) throw new Error(result?.error || "The meeting debrief could not be copied.");
+    debriefFeedback = { text: "Debrief Markdown copied.", tone: "success" };
+  } catch (error) {
+    debriefFeedback = { text: error?.message || "The meeting debrief could not be copied.", tone: "error" };
+  }
+  renderDebrief();
+}
+
+async function saveDebriefMarkdown() {
+  if (["empty", "generating"].includes(debrief.snapshot().state)) return;
+  try {
+    const result = await bridge.saveDebrief(buildDebriefMarkdown());
+    if (!result?.ok) throw new Error(result?.error || "The meeting debrief could not be exported.");
+    if (!result.canceled) {
+      debriefFeedback = {
+        text: result.fileName ? `Debrief exported as ${result.fileName}.` : "Debrief Markdown exported.",
+        tone: "success"
+      };
+    }
+  } catch (error) {
+    debriefFeedback = { text: error?.message || "The meeting debrief could not be exported.", tone: "error" };
+  }
+  renderDebrief();
+}
+
+async function clearDebrief() {
+  if (["empty", "generating"].includes(debrief.snapshot().state)) return;
+  const confirmed = await confirmLocalDeletion({
+    title: "Clear this debrief?",
+    message: "This clears only the visible local debrief draft. Retained local source data stays available so you can generate it again. The transcript, Copilot response, private context packs, and any Markdown files you already saved remain unchanged.",
+    confirmLabel: "Clear debrief"
+  });
+  if (!confirmed) return;
+  debrief.clear();
+  debriefFeedback = {
+    text: debriefContextAvailable
+      ? "Debrief draft cleared. Retained local source data is still available to generate again."
+      : "Debrief draft cleared.",
+    tone: "success"
+  };
+  renderDebrief();
+}
+
+async function deleteDebriefSourceData() {
+  if (!debriefContextAvailable || debriefGenerationPromise || backendSessionStarted) return;
+  const confirmed = await confirmLocalDeletion({
+    title: "Delete debrief source data?",
+    message: "This permanently deletes the retained local source data used to generate this meeting debrief and clears the visible draft. You will not be able to regenerate it for this meeting. The transcript, Copilot response, private context packs, and any Markdown files you already saved remain unchanged.",
+    confirmLabel: "Delete source data"
+  });
+  if (!confirmed) return;
+  try {
+    const result = await bridge.clearLocalDebrief();
+    if (!result?.ok) throw new Error(result?.error || "The retained local debrief source data could not be deleted.");
+    debrief.clear();
+    debriefContextAvailable = false;
+    debriefFeedback = {
+      text: "Retained local debrief source data deleted. Transcript, Copilot response, and saved Markdown files remain unchanged.",
+      tone: "success"
+    };
+  } catch (error) {
+    debriefFeedback = {
+      text: error?.message || "The retained local debrief source data could not be deleted.",
+      tone: "error"
+    };
+  }
+  renderDebrief();
+}
+
+function confirmLocalDeletion({ title, message, confirmLabel }) {
+  if (localDeleteRequest || elements.localDeleteDialog.open) return Promise.resolve(false);
+  const returnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  elements.localDeleteTitle.textContent = title;
+  elements.localDeleteMessage.textContent = message;
+  elements.localDeleteConfirm.textContent = confirmLabel;
+  elements.localDeleteDialog.showModal();
+  queueMicrotask(() => elements.localDeleteCancel.focus());
+  return new Promise((resolve) => {
+    localDeleteRequest = { resolve, returnTarget };
+  });
+}
+
+function resolveLocalDeleteRequest(confirmed, { close = true } = {}) {
+  const request = localDeleteRequest;
+  if (!request) return;
+  localDeleteRequest = null;
+  if (close && elements.localDeleteDialog.open) elements.localDeleteDialog.close();
+  request.resolve(confirmed);
+  queueMicrotask(() => {
+    if (request.returnTarget && document.contains(request.returnTarget)) request.returnTarget.focus();
+  });
 }
 
 function openSettings() {
@@ -1891,6 +2503,7 @@ function setWorkspaceTab(tab, { focus = false } = {}) {
   debriefTab.tabIndex = isCopilot ? -1 : 0;
   elements.workspaceCopilotPanel.hidden = !isCopilot;
   elements.workspaceDebriefPanel.hidden = isCopilot;
+  renderDebrief();
   if (focus) (isCopilot ? copilotTab : debriefTab).focus();
 }
 
@@ -3196,6 +3809,7 @@ function renderAssistResult() {
   elements.assistResult.hidden = !assistOutput;
   if (!assistOutput) {
     elements.assistResultContent.replaceChildren();
+    elements.assistClearResponse.hidden = true;
     return;
   }
 
@@ -3235,6 +3849,7 @@ function renderAssistResult() {
   elements.assistResultContent.replaceChildren(...content);
   elements.assistCopySuggestion.hidden = !suggestion;
   elements.assistResetRequest.hidden = ["pending", "streaming"].includes(assistOutput.phase);
+  elements.assistClearResponse.hidden = ["pending", "streaming"].includes(assistOutput.phase);
   elements.assistResetRequest.textContent = assistOutput.phase === "error" ? "Try again" : "Ask another question";
   elements.assistStale.hidden = !assistOutput.stale || assistOutput.staleAcknowledged;
 }
@@ -3278,6 +3893,20 @@ async function copyAssistSuggestion() {
   } else {
     setAssistMessage("Suggestion copied.", "status");
   }
+  renderAssist();
+}
+
+async function clearAssistResponse() {
+  if (!assistOutput || ["pending", "streaming"].includes(assistOutput.phase)) return;
+  const confirmed = await confirmLocalDeletion({
+    title: "Clear Copilot response?",
+    message: "This removes only the current Copilot response from this window. The transcript, debrief, private context packs, and any text you already copied remain unchanged.",
+    confirmLabel: "Clear response"
+  });
+  if (!confirmed) return;
+  assistOutput = null;
+  assistRequestContext = null;
+  setAssistMessage("Copilot response cleared from this window. Transcript and debrief remain.", "status");
   renderAssist();
 }
 

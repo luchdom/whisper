@@ -435,7 +435,8 @@ test("the v0.6 workspace keeps recording permission separate, tabs native, and o
   assert.match(html, /id="workspace-panel-debrief"[^>]*role="tabpanel"/);
   assert.match(app, /function handleWorkspaceTabKeydown\(event\)[^]*?\["ArrowLeft", "ArrowRight", "Home", "End"\]/s);
   assert.match(app, /function setWorkspaceTab\(tab, \{ focus = false \} = \{\}\)/);
-  assert.match(html, /No meeting analysis is generated yet, and nothing is sent to a provider from this tab\./);
+  assert.match(html, /Generated on this device/);
+  assert.match(html, /Portuguese translations stay with the transcript and are not used to create debrief claims\./);
   assert.match(app, /function prefillCopilotQuestion\(value\)[^]*?elements\.assistQuestion\.value = value\.slice[^]*?handleAssistQuestionInput\(\)[^]*?elements\.assistQuestion\.focus\(\)/s);
   const prefillFunction = app.slice(app.indexOf("function prefillCopilotQuestion"), app.indexOf("function checkEngineSetup"));
   assert.doesNotMatch(prefillFunction, /requestAssist\(|setAssistConsent\(/);
