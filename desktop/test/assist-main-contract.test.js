@@ -30,6 +30,29 @@ test("main ingests accepted finals before renderer relay and binds Assist to bac
   assert.match(main, /function endAssistSession\(sessionId\)[^]*?assistController\?\.endSession\(sessionId\)[^]*?providerController\?\.stopSession\(sessionId\)/);
 });
 
+test("a rejected stale start cannot overwrite an active capture's tray or overlay state", async () => {
+  const main = await readFile(new URL("../main/index.js", import.meta.url), "utf8");
+  const start = sliceBetween(
+    main,
+    'ipcMain.handle("meeting:start"',
+    'ipcMain.handle("meeting:audio"'
+  );
+
+  assert.match(start, /let startTransitionBegan = false;/);
+  assert.equal(
+    start.indexOf("if (meetingInProgress)") < start.indexOf("startTransitionBegan = true"),
+    true
+  );
+  assert.equal(
+    start.indexOf("await resolveAssistSelection") < start.indexOf("startTransitionBegan = true"),
+    true
+  );
+  assert.match(
+    start,
+    /catch \(error\) \{\s*if \(startTransitionBegan\) \{\s*trayController\?\.setState\("error"\);\s*overlayController\?\.setMeetingState\("error"\);\s*\}/s
+  );
+});
+
 test("Assist IPC and preload are narrow, question-only, and main-owned", async () => {
   const [main, preload, protocol] = await Promise.all([
     readFile(new URL("../main/index.js", import.meta.url), "utf8"),
@@ -72,14 +95,17 @@ test("Assist IPC and preload are narrow, question-only, and main-owned", async (
 
 test("global Assist shortcut only reveals the UI and fake assistance is development-only", async () => {
   const main = await readFile(new URL("../main/index.js", import.meta.url), "utf8");
+  const registry = await readFile(new URL("../main/shortcut-registry.js", import.meta.url), "utf8");
   const shortcut = sliceBetween(
     main,
-    'globalShortcut.register("CommandOrControl+Shift+A"',
-    "desktopBootstrapReady = true"
+    "function createShortcutBoundary()",
+    "function updateShortcutStatus"
   );
-  assert.match(shortcut, /showMainWindow\(\{ focusAssist: true \}\)/);
+  assert.match(shortcut, /focusAssist: \(\) => showMainWindow\(\{ focusAssist: true \}\)/);
   assert.doesNotMatch(shortcut, /backend|startSession|sendAudio|grantConsent|request\(/);
-  assert.match(main, /globalShortcut\.unregister\("CommandOrControl\+Shift\+A"\)/);
+  assert.match(registry, /action: "focusAssist"[\s\S]*accelerator: "CommandOrControl\+Shift\+A"/);
+  assert.match(main, /shortcutRegistry\?\.destroy\(\)/);
+  assert.doesNotMatch(main, /globalShortcut\.register\("CommandOrControl\+Shift\+A"/);
   assert.match(
     main,
     /return !app\.isPackaged && process\.env\.MEETING_TRANSCRIBER_FAKE_ASSIST === "1";/
@@ -87,9 +113,9 @@ test("global Assist shortcut only reveals the UI and fake assistance is developm
   assert.match(main, /if \(focusAssist\) mainWindow\.webContents\.send\("meeting:assist-shortcut"\)/);
 });
 
-test("v0.5 check gate includes every meeting-context and assistance boundary module", async () => {
+test("v0.6 check gate includes every meeting-context, assistance, and overlay boundary module", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.5.0");
+  assert.equal(packageJson.version, "0.6.0");
   for (const path of [
     "desktop/main/assist-context.js",
     "desktop/main/assist-protocol.js",
@@ -98,7 +124,13 @@ test("v0.5 check gate includes every meeting-context and assistance boundary mod
     "desktop/main/assist-controller.js",
     "desktop/main/meeting-profiles.js",
     "desktop/main/context-pack-store.js",
-    "desktop/renderer/lib/assist-request-gate.js"
+    "desktop/main/overlay-controller.js",
+    "desktop/main/overlay-policy.js",
+    "desktop/main/overlay-settings-store.js",
+    "desktop/main/shortcut-registry.js",
+    "desktop/renderer/lib/assist-request-gate.js",
+    "desktop/renderer/overlay.js",
+    "desktop/preload/overlay.cjs"
   ]) assert.match(packageJson.scripts.check, new RegExp(escapeRegex(path)));
 });
 

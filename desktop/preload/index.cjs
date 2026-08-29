@@ -50,6 +50,18 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   setAssistConsent: (enabled) => ipcRenderer.invoke("meeting:assist-consent", enabled === true),
   requestAssist: ({ question }) => ipcRenderer.invoke("meeting:assist-request", { question }),
   cancelAssist: () => ipcRenderer.invoke("meeting:assist-cancel"),
+  getOverlayStatus: () => ipcRenderer.invoke("meeting:overlay-status"),
+  showOverlay: () => ipcRenderer.invoke("meeting:overlay-show"),
+  hideOverlay: () => ipcRenderer.invoke("meeting:overlay-hide"),
+  updateOverlaySettings: (patch) => ipcRenderer.invoke("meeting:overlay-settings-update", patch),
+  acknowledgeOverlayPrivateMode: ({ version }) => ipcRenderer.invoke(
+    "meeting:overlay-private-acknowledge",
+    { acknowledged: true, version }
+  ),
+  resetOverlay: () => ipcRenderer.invoke("meeting:overlay-reset"),
+  retryOverlayShortcuts: () => ipcRenderer.invoke("meeting:overlay-shortcuts-retry"),
+  resetOverlayShortcuts: () => ipcRenderer.invoke("meeting:overlay-shortcuts-reset"),
+  toggleOverlayClickThrough: () => ipcRenderer.invoke("meeting:overlay-click-through-toggle"),
   getPlatform: () => ipcRenderer.invoke("meeting:platform"),
   getEnginePrerequisites: () => ipcRenderer.invoke("meeting:engine-prerequisites"),
   openPythonDownloadPage: () => ipcRenderer.invoke("meeting:open-python-download"),
@@ -61,6 +73,8 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   onBackendEvent: (listener) => on("meeting:backend-event", listener),
   onAssistEvent: (listener) => on("meeting:assist-event", listener),
   onAssistShortcut: (listener) => on("meeting:assist-shortcut", () => listener()),
+  onAssistPrefill: (listener) => on("meeting:assist-prefill", (value) => listener(value)),
+  onOverlayStatus: (listener) => on("meeting:overlay-status", listener),
   onBeforeClose: (listener) => on("meeting:before-close", listener),
   notifyCloseReady: () => ipcRenderer.send("meeting:close-ready")
 }));

@@ -1,5 +1,7 @@
 # Architecture and delivery boundary
 
+Current source release: **v0.6.0**.
+
 ## Current data flow
 
 ```text
@@ -12,13 +14,15 @@ microphone ─────> AudioWorklet ─> mono 16 kHz PCM ──────
                                                                       │
                                                                       └─> finalized eligible English
                                                                            └─> optional local pt-BR translation
-                                                                                └─> one atomic final event ─> UI/export
-                                                                                          │
-                                                                                          └─> main-owned finalized context buffer
-                                                                                               + meeting-start-frozen profile/private packs
-                                                                                               └─> one-use bounded provider snapshot + question
-                                                                                                    └─> optional OpenAI Responses stream
-                                                                                                         └─> separate Assist result UI
+                                                                                └─> one atomic final event
+                                                                                     ├─> transcript UI/export
+                                                                                     ├─> overlay projection: newest two finals only
+                                                                                     └─> main-owned finalized context buffer
+                                                                                          + meeting-start-frozen profile/private packs
+                                                                                          └─> one-use bounded provider snapshot + question
+                                                                                               └─> optional OpenAI Responses stream
+                                                                                                    ├─> separate Copilot result UI
+                                                                                                    └─> overlay: latest suggestion only
 ```
 
 The two audio sources stay separate from capture through inference. That gives a truthful `You` versus `Meeting audio` distinction, preserves source overlap, and avoids destroying source information by mixing. Optional local speaker clustering adds provisional anonymous IDs only to silence-delimited system-audio utterances.
@@ -27,17 +31,18 @@ The two audio sources stay separate from capture through inference. That gives a
 
 ### Desktop main process
 
-- Owns the Electron window, single-instance lock, native tray, OS login-item integration, OS media permissions, system-loopback selection, settings persistence, safe local export, and sidecar lifecycle.
+- Owns the Electron workspace and compact overlay windows, single-instance lock, native tray, OS login-item integration, OS media permissions, system-loopback selection, settings persistence, safe local export, and sidecar lifecycle.
 - Validates every renderer command and every sidecar event at the IPC boundary.
 - Loads the bundled model manifest and exposes only a sanitized catalog data-transfer object (DTO) containing public IDs and presentation metadata. Repository revisions, URLs, hashes, and local cache paths do not cross into the renderer.
 - Relays only allowlisted model-preparation phases; app-owned cache paths and download internals never cross into the renderer.
 - Owns native file/folder pickers and every file write. The sandboxed renderer may display the selected transcript-directory path, but it cannot submit an arbitrary path or perform filesystem operations.
 - Owns the optional hosted-provider boundary: immutable built-in profile catalog, operating-system-encrypted private context store, exact profile/pack-revision freeze at meeting start, canonical finalized-segment context buffer, content-free size preview, frozen bounded request snapshot, meeting-scoped versioned consent, non-persistent network session, fixed endpoint/model/system policy, operating-system-encrypted credential store, request bounds, cancellation, identity sequencing, and sanitized errors. Provider initialization and request failure are isolated so neither can block local transcription.
+- Owns overlay policy, bounded finalized-segment/suggestion projection, versioned overlay-settings persistence, independent global-shortcut registration, transient click-through recovery, display clamping/recovery, and exact-window IPC authorization. Overlay or shortcut failure remains optional and cannot block the local capture/sidecar path.
 - Does not log stderr, PCM, transcript text, or participant data.
 
 ### Sandboxed renderer
 
-- Requests capture only after the visible start action.
+- Requests capture only after the visible start action and an explicit per-start recording-permission confirmation.
 - Stops Chromium's required display video track immediately; video frames are never read or stored.
 - Uses an `AudioWorklet` and deterministic streaming resampler to produce signed 16-bit little-endian, mono, 16 kHz packets.
 - Builds the model picker from the sanitized catalog instead of maintaining a second model allowlist.
@@ -46,7 +51,8 @@ The two audio sources stay separate from capture through inference. That gives a
 - Reports only an exact tray-state enum and accepts only fixed focus/stop tray actions; transcript text, errors, paths, and participant data never enter native tray content.
 - Can choose Off or the allowlisted OpenAI provider, request lazy configured/encryption-available status, and trigger argument-free clipboard import/revocation. It never receives an API key, ciphertext, credential path, arbitrary provider URL, or raw provider exception.
 - Chooses one immutable built-in meeting profile and up to 12 compatible exact context-pack revisions before Start. Local pack management can display and edit pack bodies, but ongoing Assist status, request-preview, and Review-context DTOs contain only content-free profile and pack metadata.
-- Presents Assist below the live transcript, optionally reviews the main-owned finalized transcript plus content-free meeting-context summary, submits only an explicit question after current-version meeting consent, and renders provider events in state that is separate from `TranscriptStore`. Profile quick actions only prefill this question and never auto-send.
+- Presents the wide three-region workspace with setup on the left, live transcript in the center, and Copilot/Debrief tabs on the right, then progressively collapses and stacks those regions at narrower widths.
+- Presents Copilot in the insight rail, optionally reviews the main-owned finalized transcript plus content-free meeting-context summary, submits only an explicit question after current-version meeting consent, and renders provider events in state that is separate from `TranscriptStore`. Profile quick actions only prefill this question and never auto-send.
 - Uses session, request, context-revision, and event-sequence checks to reject late, superseded, out-of-order, or cross-meeting assistance output. Session transitions and every accepted final invalidate older status/consent reads; main captures the context after its awaited credential-status read, and the renderer applies only the exact current status generation. Because Electron invoke replies and streamed renderer events use separate channels, a renderer-owned attempt latches only a strictly accepted terminal event and waits for that event after the invoke reply. A local terminal-delivery timeout blocks another request against the same context revision until a new final or meeting replaces that identity. A newer transcript revision marks an accepted result as based on an earlier frozen context rather than silently changing its provenance.
 
 ### Python sidecar
@@ -61,6 +67,35 @@ The two audio sources stay separate from capture through inference. That gives a
 - Optionally loads the verified CTranslate2 English-to-pt-BR model, translates finalized eligible English only, and preserves the original if translation preparation or inference fails.
 
 The protocol is documented in [backend/README.md](../backend/README.md).
+
+## Overt workspace and companion boundary
+
+The v0.6.0 renderer is an overt meeting workspace rather than a concealed assistant. Its wide layout has three regions: a setup rail for capture/model/profile/private-context controls, a canonical live-transcript region, and an insight rail with Copilot and Debrief tabs. At medium widths the setup rail moves above the other two and can collapse; at narrow widths all three regions stack. Responsive layout changes presentation only and do not change ownership of capture, transcript, context, or provider state.
+
+Recording and hosted assistance use separate gates. Every local Start opens a renderer-owned modal that states audio stays local/not saved and requires the user to confirm participant knowledge and recording permission before capture APIs are called. Each OpenAI transmission separately requires the current meeting disclosure plus an explicit Send. Accepting either gate does not accept the other; neither profile/private-context setup nor provider consent starts audio capture.
+
+The compact overlay is created by main as a separate window and starts hidden. Backend preparation can set **Preparing — not recording**, but only renderer-confirmed transcription may auto-reveal it, without focus. The complete state vocabulary is **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, and **Stopped — not recording**. Show/Hide never changes capture state, and meeting stop or replacement clears the projected meeting content.
+
+Overlay projection is finalized-only and bounded independently from the canonical stores: no more than two segments, each no more than 2,000 characters, plus the latest explicitly requested suggestion up to 4,000 characters. It receives no draft transcript, raw audio, provider question, private-pack body, API key, or provider-send capability. The overlay preload exposes only status read/subscription, Show workspace, Open Copilot, and Hide; every start, consent, Review, and Send action remains in the full workspace.
+
+The version-1 overlay settings schema defaults to **Accessible** mode, opacity 1, and a safe 560 × 360 DIP location with a 420 × 300 DIP minimum. Accessible mode is always fully opaque. **Private** mode permits only **60–100%** opacity and requests platform content protection, but its disclosure explicitly says this is a privacy aid rather than stealth or guaranteed invisibility. Only schema version, mode, opacity, validated bounds, and display identity are persisted in `overlay-settings.json`; transcript/provider content, visibility, click-through, and shortcut state are not. Invalid persisted state falls back to the accessible opaque default.
+
+Click-through is transient and valid only in Private mode while the Show/Hide recovery shortcut is registered. Main makes the window non-focusable while it is active and disables it if the recovery shortcut is lost, Show recovers the window, Accessible mode is restored, settings are reset, or the app restarts.
+
+Global accelerators are fixed and independently available:
+
+| Main-owned action | Accelerator |
+| --- | --- |
+| Show/hide overlay | `CommandOrControl+Shift+Space` |
+| Focus Copilot in workspace | `CommandOrControl+Shift+A` |
+| Cancel current Copilot request | `CommandOrControl+Shift+Esc` |
+| Increase private opacity by 5% | `CommandOrControl+Alt+Up` |
+| Decrease private opacity by 5% | `CommandOrControl+Alt+Down` |
+| Toggle private click-through | `CommandOrControl+Shift+X` |
+
+Each registration has its own registered/unavailable/blocked/unregistered status and sanitized reason. A conflict cannot disable unrelated shortcuts. Retry attempts unavailable registrations and recovers Show/Hide before click-through; Reset unregisters only app-owned accelerators and restores defaults. Generation checks prevent callbacks from stale registrations from changing current state.
+
+The overlay `BrowserWindow` is non-transparent and uses context isolation, sandboxing, disabled Node integration/devtools, web security, a restrictive content-security policy, denied new windows, and navigation locked to its exact local document. Dedicated preload and main IPC surfaces validate the exact main frame, argument count, and bounded DTO shape. Move/resize persistence is debounced; display add/remove/metrics changes are also debounced and clamp the overlay into an available work area. Missing displays and Reset recover it to the primary/available display in an opaque, focusable, non-click-through state.
 
 ## Model manifest trust boundary
 
@@ -132,6 +167,7 @@ This boundary lets a future engine use a native streaming recognizer, local WebS
 ## Privacy and safety invariants
 
 - Capture is explicit and visibly indicated. Hiding the window is opt in; the native tray keeps a distinct recording symbol, elapsed timer, and stop action until capture actually stops.
+- Every Start requires a fresh recording-permission confirmation. That confirmation is separate from the meeting-scoped disclosure and explicit Send required for each OpenAI projection.
 - Tray **Start transcription…** only reveals and focuses the visible Start control. Login-item and `--hidden` launches never start capture.
 - Audio is memory-only and is never sent to a transcription API.
 - A selected model can access the network only for initial provisioning. Every later startup re-verifies the app-owned local artifact and can remain offline when verification succeeds.
@@ -141,11 +177,13 @@ This boundary lets a future engine use a native streaming recognizer, local WebS
 - A final ASR failure or inference overload produces a non-success session reason. The main process then blocks autosave so an incomplete transcript is never announced as successfully saved.
 - Voice identity, voice enrollment, cloud summaries, automatic/background advice, and external actions require separate opt-in designs.
 - Hosted assistance remains Off by default. Provider/profile selection, private-context management, key import, setup, and Assist review send nothing. The explicit Send action requires current-version consent for the active meeting and can transmit only the shown built-in profile, exact meeting-start-selected private pack bodies, bounded finalized transcript, and the user's question. It excludes audio, drafts, local translations, unselected packs, manual speaker names, and prior assistance conversation. Main uses the separately stored API key only in the HTTPS Authorization header.
+- The overlay is overt and fully opaque by default. Private mode's content-protection request and reduced opacity are a non-guarantee privacy aid, never a promise that meeting or capture software cannot see the window.
+- Only two bounded finalized segments and the latest bounded suggestion cross into overlay state. Private-pack bodies, questions, credentials, audio, drafts, and provider-send APIs do not.
 - Windows endpoint loopback can include notifications and unrelated application sounds. Process-scoped capture is a later privacy improvement.
 
 ## Platform boundary
 
-Windows 11 capture and local inference have been exercised in this workspace. The built-in macOS system-audio path uses Electron's native picker and is gated to macOS 15 or newer; microphone-only capture remains available below that gate. Tray and login-item decisions are covered by injected Windows/macOS policy tests, while actual macOS menu-bar, login-item, capture, Assist, Apple Silicon performance, signing, notarization, and packaging remain unverified until tested on actual macOS hardware.
+Windows 11 capture and local inference have been exercised in this workspace. The built-in macOS system-audio path uses Electron's native picker and is gated to macOS 15 or newer; microphone-only capture remains available below that gate. Tray, login-item, overlay, shortcut, persistence, hardening, and display-recovery decisions are covered by deterministic policy/contract tests. An isolated Windows source-app runtime acceptance also passed for the responsive workspace, permission dialog, overlay mode/policy transitions, settings restart persistence, and click-through recovery; unavailable non-recovery shortcuts were isolated and reported truthfully. Actual macOS menu-bar, login-item, capture, content protection, always-on-top, global-shortcut, overlay, Assist, Apple Silicon performance, signing, notarization, and packaging behavior remains In Review until tested on hardware.
 
 Local translation is currently enabled only for Windows x64. The INT8 converted output was reproduced twice with identical hashes on that platform. The macOS setting stays unavailable until the conversion outputs and runtime behavior are verified on Intel and Apple Silicon as applicable; the application does not assume that Windows conversion hashes are portable.
 
@@ -159,10 +197,12 @@ A one-sentence English-to-pt-BR smoke completed in 0.109 seconds on the validate
 
 Assist has deterministic protocol, immutable-profile, encrypted-pack revision/limit, content-free preview, oversize fail-closed, context-boundary, cancellation, and renderer-state coverage. With `MEETING_TRANSCRIBER_FAKE=1` and `MEETING_TRANSCRIBER_FAKE_ASSIST=1`, the development fake sidecar emits a finalized segment during the active session after the first bounded audio packet and the fake provider streams suggestion text without a provider network request. These paths are disabled in packaged builds and still require explicit start, a selected audio source, and meeting-scoped consent. Manual Review remains optional because Send preflight freezes the one-use request pack automatically. No live OpenAI API request was made for this milestone, so authentication, billing-account behavior, real network streaming, selected-profile/private-pack behavior against the hosted model, model quality, and provider-side latency remain unverified. The 20-second timeout is an enforced request bound, not a measured provider-latency guarantee. OS-encrypted private-context behavior and the broader Assist runtime also remain unverified on actual macOS hardware.
 
+The v0.6.0 deterministic gates cover the three-region responsive workspace, per-start permission modal, overlay lifecycle and bounded finalized-only projection, accessible/private policy, 60–100% private opacity, exact persisted schema, non-persisted recovery-gated click-through, independent shortcut availability/retry/reset, hardened window/preload/IPC contracts, and multi-display recovery. The isolated Windows source-app acceptance then rendered 1440/1120/880/760-pixel layouts without overflow, verified the separately focused permission dialog, Ready/Private/Accessible overlay states, the exact main-owned disclosure, 80% private opacity with content protection and taskbar exclusion, settings persistence after restart, click-through non-persistence and Show recovery, and Accessible restoration to opacity 1 with protection/taskbar exclusion disabled. Some non-recovery accelerators were unavailable because of operating-system conflicts and remained isolated from other shortcut actions. Actual macOS content protection, always-on-top, global shortcuts, display behavior, and opacity/click-through behavior remain In Review.
+
 ## Staged roadmap
 
 1. Run a real 60-minute Windows desktop meeting with English-to-pt-BR translation enabled through system-audio capture, Electron IPC, renderer reconciliation, and autosave; measure end-to-end latency, dropped-audio behavior, and anonymous-label stability.
-2. Validate macOS system audio, microphone capture, speaker clustering, ASR performance, `safeStorage` credential/private-context behavior, Assist, and deterministic local translation conversion/runtime behavior on actual macOS hardware before enabling its translation toggle.
+2. Validate macOS system audio, microphone capture, speaker clustering, ASR performance, `safeStorage` credential/private-context behavior, Assist, overlay content protection/always-on-top/global shortcuts/display recovery, and deterministic local translation conversion/runtime behavior on actual macOS hardware before enabling its translation toggle.
 3. Decide whether an explicit opt-in audio-retention mode is acceptable for a stronger offline, overlap-aware speaker correction pass.
 4. Decide whether to port the proven live subsystem into a Vibe fork or continue this shell.
 5. Validate the overt tray experience on macOS hardware, then add meeting detection, retention controls, and a bundled/signed runtime.

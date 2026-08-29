@@ -22,6 +22,7 @@
           </div>
         </div>
         <div class="header-actions">
+          <button id="toggle-overlay" class="secondary-action header-overlay" type="button" hidden>Overlay</button>
           <button id="open-settings" class="secondary-action header-settings" type="button">Settings</button>
           <div class="session-readout" aria-live="polite" aria-atomic="true">
             <span id="session-dot" class="status-dot neutral" aria-hidden="true"></span>
@@ -32,6 +33,21 @@
       </header>
 
       <main class="workspace">
+        <section class="capture-ribbon" aria-label="Transcription controls">
+          <div class="capture-ribbon-status">
+            <span id="ribbon-status-dot" class="status-dot neutral" aria-hidden="true"></span>
+            <div>
+              <strong id="ribbon-status">Ready to start</strong>
+              <p id="ribbon-summary">Select sources and a local model before starting.</p>
+            </div>
+          </div>
+          <time id="ribbon-elapsed" class="capture-ribbon-elapsed" datetime="PT0S">00:00:00</time>
+          <p class="capture-ribbon-permission"><strong>Visible capture:</strong> start only when everyone has been informed and you have permission.</p>
+          <button id="toggle-setup-rail" class="secondary-action setup-rail-toggle" type="button" aria-expanded="true" aria-controls="setup-rail">Hide setup</button>
+          <button id="session-action" class="primary-action capture-ribbon-action" type="button" aria-keyshortcuts="Control+Enter">Start transcription</button>
+        </section>
+        <div class="workspace-columns">
+          <aside id="setup-rail" class="setup-rail" aria-label="Meeting setup">
         <section class="setup-panel" aria-labelledby="sources-heading">
           <div class="source-area">
             <div class="section-heading">
@@ -91,12 +107,6 @@
             </div>
           </div>
 
-          <button
-            id="session-action"
-            class="primary-action"
-            type="button"
-            aria-keyshortcuts="Control+Enter"
-          >Start transcription</button>
         </section>
 
         <section class="meeting-context-bar" aria-labelledby="meeting-profile-heading">
@@ -118,6 +128,7 @@
           </div>
           <p id="meeting-context-lock-note" class="meeting-context-lock-note" hidden>Profile and private context are frozen for this meeting. Stop before changing them.</p>
         </section>
+          </aside>
 
         <div class="notice-stack">
           <div id="app-alert" class="app-alert" role="status" aria-live="polite" hidden></div>
@@ -147,10 +158,16 @@
           <footer id="privacy-note" class="privacy-note">Audio is never saved. Final text stays here until you save it or start another meeting.</footer>
         </section>
 
+        <aside class="insight-rail" aria-label="Meeting workspace">
+          <div class="workspace-tabs" role="tablist" aria-label="Meeting workspace tabs">
+            <button id="workspace-tab-copilot" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="workspace-panel-copilot" tabindex="0">Copilot</button>
+            <button id="workspace-tab-debrief" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="workspace-panel-debrief" tabindex="-1">Debrief</button>
+          </div>
+          <div id="workspace-panel-copilot" class="workspace-tab-panel" role="tabpanel" aria-labelledby="workspace-tab-copilot">
         <section id="assist-panel" class="assist-panel" aria-labelledby="assist-heading">
           <header class="assist-header">
             <div>
-              <h2 id="assist-heading">Assist with this meeting</h2>
+              <h2 id="assist-heading">Meeting Copilot</h2>
               <p>Ask about finalized transcript text. Nothing is sent until you choose Send.</p>
             </div>
             <span id="assist-state-badge" class="assist-state-badge" hidden></span>
@@ -249,6 +266,15 @@
             </footer>
           </div>
         </section>
+          </div>
+          <div id="workspace-panel-debrief" class="workspace-tab-panel debrief-placeholder" role="tabpanel" aria-labelledby="workspace-tab-debrief" hidden>
+            <div class="debrief-placeholder-icon" aria-hidden="true">✦</div>
+            <h2>Debrief is next</h2>
+            <p>After you stop, this space will turn the finalized local transcript into a reviewable meeting summary, decisions, actions, and open questions.</p>
+            <p class="debrief-placeholder-note">No meeting analysis is generated yet, and nothing is sent to a provider from this tab.</p>
+          </div>
+        </aside>
+        </div>
       </main>
     </div>
 
@@ -459,6 +485,41 @@
           <p id="app-behavior-lock-note" class="settings-lock-note" hidden>Stop the meeting to change app behavior.</p>
         </section>
 
+        <section id="overlay-settings-section" class="settings-section overlay-settings-section" aria-labelledby="overlay-settings-heading" hidden>
+          <div>
+            <h3 id="overlay-settings-heading">Overlay and shortcuts</h3>
+            <p>Keep a compact, overt meeting view on screen. It always shows capture status; it does not make this app invisible to meeting software.</p>
+          </div>
+          <div id="overlay-status" class="overlay-status" role="status" aria-live="polite">Overlay controls are loading.</div>
+          <fieldset class="choice-group" aria-describedby="overlay-mode-disclosure">
+            <legend>Overlay mode</legend>
+            <label class="choice-row" for="overlay-mode-accessible">
+              <input id="overlay-mode-accessible" name="overlay-mode" type="radio" value="accessible" checked>
+              <span><strong>Accessible</strong><small>Opaque window with normal keyboard and pointer controls.</small></span>
+            </label>
+            <label class="choice-row" for="overlay-mode-private">
+              <input id="overlay-mode-private" name="overlay-mode" type="radio" value="private">
+              <span><strong>Private</strong><small>Requests operating-system content protection where available. It is not a stealth feature.</small></span>
+            </label>
+          </fieldset>
+          <label id="overlay-opacity-row" class="range-row" for="overlay-opacity" hidden>
+            <span><strong>Private-mode opacity</strong><small id="overlay-opacity-value">100%</small></span>
+            <input id="overlay-opacity" type="range" min="60" max="100" step="5" value="100">
+          </label>
+          <p id="overlay-mode-disclosure" class="overlay-disclosure">Private mode may reduce screen-capture visibility only where the operating system supports it. Other people and meeting software can still see your participation; always follow your organization’s policy.</p>
+          <label class="overlay-acknowledgement" for="overlay-disclosure-acknowledged">
+            <input id="overlay-disclosure-acknowledged" type="checkbox">
+            <span>I understand that the overlay is overt and private mode is not stealth.</span>
+          </label>
+          <div id="overlay-shortcut-list" class="overlay-shortcut-list" aria-label="Overlay shortcut status"></div>
+          <div class="overlay-actions">
+            <button id="show-overlay" class="secondary-action" type="button">Show overlay</button>
+            <button id="reset-overlay" class="secondary-action" type="button">Reset overlay</button>
+            <button id="retry-overlay-shortcuts" class="secondary-action" type="button">Retry shortcuts</button>
+            <button id="reset-overlay-shortcuts" class="secondary-action" type="button">Reset shortcuts</button>
+          </div>
+        </section>
+
         <section class="settings-section" aria-labelledby="translation-settings-heading">
           <div>
             <h3 id="translation-settings-heading">Translation</h3>
@@ -514,6 +575,24 @@
 
         <footer class="settings-dialog-footer">
           <button id="close-settings" class="primary-dialog-action" type="button">Done</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="session-consent-dialog" class="session-consent-dialog" aria-labelledby="session-consent-title" aria-describedby="session-consent-description">
+      <div class="session-consent-dialog-content">
+        <header class="settings-dialog-header">
+          <div>
+            <h2 id="session-consent-title">Start local transcription?</h2>
+            <p id="session-consent-description">This starts capture from the sources you selected and processes speech with the local transcription engine. Audio is not saved.</p>
+          </div>
+          <button id="close-session-consent-top" class="secondary-action dialog-close" type="button" aria-label="Close start transcription confirmation">Close</button>
+        </header>
+        <p class="session-consent-notice"><strong>Before starting:</strong> make sure everyone in the meeting knows transcription is on and that you have permission to capture the selected sources.</p>
+        <p class="session-consent-provider-note">This is separate from Copilot. No transcript or private context is sent to OpenAI unless you later review the provider disclosure and choose Send.</p>
+        <footer class="settings-dialog-footer">
+          <button id="cancel-session-consent" class="secondary-action" type="button">Cancel</button>
+          <button id="confirm-session-consent" class="primary-dialog-action" type="button">I have permission — start</button>
         </footer>
       </div>
     </dialog>

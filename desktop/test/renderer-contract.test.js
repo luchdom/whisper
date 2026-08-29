@@ -182,7 +182,7 @@ test("meeting assistance is overt, question-only, consent-gated, and isolated fr
   ]);
 
   assert.equal(html.indexOf('id="transcript-heading"') < html.indexOf('id="assist-heading"'), true);
-  assert.match(html, />Assist with this meeting</);
+  assert.match(html, />Meeting Copilot</);
   assert.match(html, /finalized transcript text\. Nothing is sent until you choose Send\./);
   assert.match(html, /id="assist-question"[^>]*maxlength="1000"/s);
   assert.match(html, /id="assist-consent" type="checkbox"/);
@@ -407,4 +407,72 @@ test("window close cancels and stops capture before waiting for a delayed start"
   assert.equal(awaitCancelBackend > stop, true);
   assert.equal(wait > awaitCancelBackend, true);
   assert.match(app, /capture\.start\(selection, \{ signal: startSignal \}\)/);
+});
+
+test("the v0.6 workspace keeps recording permission separate, tabs native, and overlay hooks optional", async () => {
+  const [html, app, styles] = await Promise.all([
+    readFile(new URL("../renderer/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/styles.css", import.meta.url), "utf8")
+  ]);
+
+  assert.match(html, /class="capture-ribbon" aria-label="Transcription controls"/);
+  assert.match(html, /id="ribbon-elapsed"[^>]*datetime="PT0S"/);
+  assert.match(app, /elements\.ribbonElapsed\.textContent = elements\.elapsed\.textContent;/);
+  assert.match(html, /Visible capture:<\/strong> start only when everyone has been informed and you have permission\./);
+  assert.match(html, /<dialog id="session-consent-dialog"[^>]*aria-labelledby="session-consent-title"/);
+  assert.match(html, />Start local transcription\?<\/h2>/);
+  assert.match(html, />I have permission — start</);
+  assert.match(html, /This is separate from Copilot\. No transcript or private context is sent to OpenAI/);
+  assert.match(app, /else if \(!state\.active\) openSessionConsent\(\);/);
+  assert.match(app, /function confirmSessionConsent\(\) \{\s*closeSessionConsent\(\);\s*void beginStartSession\(\);/s);
+  assert.match(app, /sessionConsentDialog\.addEventListener\("close"[^]*?returnTarget\.focus\(\)/s);
+
+  assert.match(html, /role="tablist" aria-label="Meeting workspace tabs"/);
+  assert.match(html, /id="workspace-tab-copilot"[^>]*role="tab"[^>]*aria-controls="workspace-panel-copilot"/);
+  assert.match(html, /id="workspace-tab-debrief"[^>]*role="tab"[^>]*aria-controls="workspace-panel-debrief"/);
+  assert.match(html, /id="workspace-panel-copilot"[^>]*role="tabpanel"/);
+  assert.match(html, /id="workspace-panel-debrief"[^>]*role="tabpanel"/);
+  assert.match(app, /function handleWorkspaceTabKeydown\(event\)[^]*?\["ArrowLeft", "ArrowRight", "Home", "End"\]/s);
+  assert.match(app, /function setWorkspaceTab\(tab, \{ focus = false \} = \{\}\)/);
+  assert.match(html, /No meeting analysis is generated yet, and nothing is sent to a provider from this tab\./);
+  assert.match(app, /function prefillCopilotQuestion\(value\)[^]*?elements\.assistQuestion\.value = value\.slice[^]*?handleAssistQuestionInput\(\)[^]*?elements\.assistQuestion\.focus\(\)/s);
+  const prefillFunction = app.slice(app.indexOf("function prefillCopilotQuestion"), app.indexOf("function checkEngineSetup"));
+  assert.doesNotMatch(prefillFunction, /requestAssist\(|setAssistConsent\(/);
+  assert.match(app, /button\.title = "Prefill the question\. This does not send anything\."/);
+
+  assert.match(html, /id="toggle-overlay"[^>]*hidden/);
+  assert.match(html, /id="overlay-settings-section"[^>]*hidden/);
+  assert.match(app, /function hasOverlayBridge\(\) \{\s*return typeof bridge\?\.getOverlayStatus === "function";/s);
+  assert.match(app, /typeof bridge\?\.onOverlayStatus === "function"/);
+  assert.match(app, /\["showOverlay", "hideOverlay", "resetOverlay", "retryOverlayShortcuts", "resetOverlayShortcuts"\]/);
+  assert.match(app, /const status = value\?\.status && typeof value\.status === "object" \? value\.status : value;/);
+  assert.match(app, /Array\.isArray\(status\.shortcuts\?\.shortcuts\)/);
+  assert.match(app, /shortcut\.available === true \|\| shortcut\.registered === true \|\| shortcut\.state === "registered"/);
+  assert.match(app, /return value\.replace\("CommandOrControl", "Ctrl\/Cmd"\);/);
+  assert.match(app, /elements\.overlayDisclosure\.textContent = overlayStatus\?\.disclosure\?\.body/);
+  assert.match(app, /let overlayFeedback = null;/);
+  assert.match(app, /elements\.overlayStatus\.textContent = overlayFeedback\?\.message \?\? statusMessage;/);
+  assert.match(app, /function setOverlayFeedback\(message, tone = "error"\)/);
+  assert.match(app, /function clearOverlayFeedback\(\)/);
+  assert.doesNotMatch(app, /catch \(error\) \{\s*elements\.overlayStatus\.textContent =/s);
+  const overlaySettingsUpdate = app.slice(
+    app.indexOf("async function updateOverlaySettingsFromForm"),
+    app.indexOf("async function runOverlayAction")
+  );
+  assert.match(overlaySettingsUpdate, /bridge\.acknowledgeOverlayPrivateMode\(\{[^]*?version: overlayStatus\.disclosure\.version[^]*?\}\)/s);
+  assert.ok(
+    overlaySettingsUpdate.indexOf("acknowledgeOverlayPrivateMode")
+      < overlaySettingsUpdate.indexOf("updateOverlaySettings({ mode, opacity })")
+  );
+  assert.match(overlaySettingsUpdate, /const opacity = mode === "private" \? Number\(elements\.overlayOpacity\.value\) \/ 100 : 1;/);
+  assert.match(app, /bridge\.updateOverlaySettings\(\{ mode, opacity \}\)/);
+  assert.match(html, /id="overlay-opacity"[^>]*min="60"[^>]*max="100"[^>]*step="5"/);
+  assert.match(app, /Math\.max\(0\.6, opacityValue\)/);
+  assert.match(html, /private mode is not stealth/i);
+
+  assert.match(styles, /grid-template-columns: 260px minmax\(0, 1fr\) 360px;/);
+  assert.match(styles, /@media \(max-width: 1439px\) and \(min-width: 1120px\)[^]*?grid-template-columns: 232px minmax\(0, 1fr\) 320px;/s);
+  assert.match(styles, /@media \(max-width: 1119px\) and \(min-width: 880px\)/);
+  assert.match(styles, /@media \(max-width: 879\.98px\)[^]*?overflow-x: hidden;[^]*?grid-template-columns: 1fr;/s);
 });

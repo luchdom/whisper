@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meeting Transcriber companion</title>
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body>
+    <main class="companion" aria-label="Meeting Transcriber companion">
+      <header class="titlebar">
+        <div class="brand">
+          <img class="brand-mark" src="../build/icon.png" width="22" height="22" alt="">
+          <span>Meeting Transcriber</span>
+        </div>
+        <div class="window-controls no-drag">
+          <button id="open-workspace" class="icon-button" type="button" aria-label="Show Meeting Transcriber" title="Show workspace">↗</button>
+          <button id="hide-overlay" class="icon-button" type="button" aria-label="Hide companion" title="Hide companion">—</button>
+        </div>
+      </header>
+
+      <section class="capture-strip" aria-labelledby="meeting-state-label">
+        <div id="recording-dot" class="recording-dot" aria-hidden="true"></div>
+        <div class="capture-copy" role="status" aria-live="polite" aria-atomic="true">
+          <strong id="meeting-state-label">Ready — not recording</strong>
+          <span id="source-summary">Waiting for finalized audio</span>
+          <span id="meeting-issue" hidden></span>
+        </div>
+        <time id="elapsed" datetime="PT0S" aria-live="off">00:00:00</time>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel transcript-panel" aria-labelledby="transcript-title">
+          <div class="panel-heading">
+            <h1 id="transcript-title">Live transcript</h1>
+            <span class="eyebrow">Finalized only</span>
+          </div>
+          <div id="segments" class="segments" aria-live="polite" aria-atomic="false">
+            <p class="empty-state">Finalized speech will appear here while recording.</p>
+          </div>
+        </section>
+
+        <section class="panel copilot-panel" aria-labelledby="copilot-title">
+          <div class="panel-heading">
+            <h2 id="copilot-title">Copilot</h2>
+            <span id="provider-state" class="provider-state">Local transcript only</span>
+          </div>
+          <div id="suggestion" class="suggestion" aria-live="polite">
+            <p class="empty-state">Suggestions you explicitly request in the workspace will appear here.</p>
+          </div>
+          <p id="provider-disclosure" class="provider-disclosure">
+            OpenAI assistance uses meeting data only after explicit approval for the current meeting.
+          </p>
+          <button id="focus-copilot" class="primary-button no-drag" type="button">Open Copilot</button>
+        </section>
+      </div>
+
+      <footer class="privacy-footer">
+        <span id="visibility-label">Overt companion · fully opaque</span>
+        <span>Never starts recording</span>
+      </footer>
+    </main>
+    <script type="module" src="./overlay.js"></script>
+  </body>
+</html>

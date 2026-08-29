@@ -4,6 +4,8 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
+Current source release: **v0.6.0**.
+
 ## Requirements
 
 - Node.js 22+
@@ -45,6 +47,41 @@ Open **Settings > App behavior** to change the defaults:
 
 Only one app instance runs. A second launch shows and focuses the existing window. The explicit `--hidden` argument hides the first window for startup integration without changing capture state.
 
+## Meeting workspace and companion overlay
+
+The overt v0.6.0 workspace uses three regions on wide windows: a left setup rail for sources, model/language, meeting profile, and private-context selection; a center live transcript; and a right insight rail with Copilot and Debrief tabs. Between 881 and 1,119 CSS pixels the setup rail moves above the transcript and can collapse while the transcript and insight rail remain side by side. At 880 pixels and below, all regions stack into one column. The tab list supports pointer use plus Arrow Left/Right, Home, and End keyboard navigation.
+
+### Recording permission versus OpenAI consent
+
+Every press of **Start transcription** opens a focused confirmation dialog before capture begins. It states that transcription runs locally, audio is not saved, and the user must confirm that everyone knows and recording permission has been obtained. Cancel returns focus without changing capture state. This per-start confirmation is independent of Copilot: it neither accepts the OpenAI disclosure nor sends profile, private-context, transcript, or question data.
+
+OpenAI setup remains local until a request. Provider/model selection, profile selection, pack management, key import, Copilot expansion, and **Review context** send nothing. Each provider transmission still requires the exact current meeting disclosure to be accepted and the user to choose **Send** explicitly. The normal Send preflight freezes and consumes a fresh main-owned one-use context pack; manual Review is optional and inspect-only.
+
+### Overlay behavior and modes
+
+The companion overlay is a separate compact, non-transparent window. It initializes hidden and does not appear merely because the backend entered preparation. It can reveal without taking focus only after the main renderer confirms active transcription. Its status is one of **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, or **Stopped — not recording**, with current source and elapsed time where applicable. Stopping the meeting or starting its replacement clears projected transcript and Copilot output without affecting the full transcript store.
+
+Projection into the overlay is intentionally narrow: at most the two newest finalized transcript segments, each capped at 2,000 characters, and the latest explicitly requested suggestion, capped at 4,000 characters. Draft text, private-pack bodies, the API key, the provider question, raw audio, and provider-request controls do not enter its status DTO. Its only actions are **Show workspace**, **Open Copilot**, and **Hide**; it cannot start audio capture or send an OpenAI request.
+
+The default **Accessible** mode is fully opaque, focusable, and overt. **Private** mode asks supported Windows/macOS APIs for content protection and permits **60–100%** opacity, but it is only a privacy aid: the overlay may still appear with some applications, operating-system versions, or capture methods, and it is not stealth or guaranteed invisibility. The app persists only settings version, mode, opacity, validated bounds, and display identity in `overlay-settings.json` under Electron `userData`. Transcript/provider content, visibility, click-through state, and shortcut state are not persisted. A malformed settings file fails closed to the accessible opaque default.
+
+Click-through can be enabled only in Private mode and only while the Show/Hide recovery shortcut is successfully registered. It is disabled if the recovery shortcut becomes unavailable, when Accessible mode is restored, on reset, and across app restart. While click-through is active the overlay is not focusable; recovery remains available through the registered Show/Hide shortcut.
+
+### Global shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| Show or hide overlay | **Ctrl/Cmd+Shift+Space** |
+| Focus Copilot in the full workspace | **Ctrl/Cmd+Shift+A** |
+| Cancel the current Copilot request | **Ctrl/Cmd+Shift+Esc** |
+| Increase private-mode opacity by 5% | **Ctrl/Cmd+Alt+Up** |
+| Decrease private-mode opacity by 5% | **Ctrl/Cmd+Alt+Down** |
+| Toggle private-mode click-through | **Ctrl/Cmd+Shift+X** |
+
+Each accelerator registers independently and reports registered, unavailable, blocked, or unregistered state with a sanitized reason. A conflict does not disable unrelated actions. **Retry shortcuts** retries unavailable registrations, restoring the Show/Hide recovery path before click-through. **Reset shortcuts** unregisters only accelerators owned by Meeting Transcriber and restores the defaults. The in-window actions remain available when a global shortcut is reserved by the operating system.
+
+The overlay window uses `contextIsolation`, sandboxing, disabled Node integration/devtools, a strict content-security policy, blocked navigation/new-window creation, and a dedicated minimal preload that exposes only status subscription plus Show workspace, Open Copilot, and Hide. Main accepts overlay IPC only from the exact local main frame, validates argument counts and bounded DTOs, and sanitizes errors. Move/resize state is clamped to the current display work area; display add/remove/metrics changes recover an off-screen overlay to an available display. Reset restores the accessible, opaque, focusable, non-click-through default at a safe location. Overlay or shortcut initialization failure cannot block local transcription.
+
 ## Hosted AI assistance
 
 **Settings > AI assistance** configures the optional hosted meeting-assistance flow. **Off** is the default. **OpenAI API** is available, and **Local model — coming later** is visible but disabled. Selecting OpenAI or its fixed **GPT-5.6 Luna** model only persists the choice; it does not test the connection, contact OpenAI, or send meeting content. Choosing a meeting profile, editing or selecting private context, and importing a key are also local-only setup actions.
@@ -65,9 +102,9 @@ The current limits are 24 stored packs, 12 selected compatible packs per meeting
 
 The renderer holds pack bodies only in its narrow local management library and form. They never enter ongoing Assist status or Review-context summaries; those DTOs contain only the profile's public identity and each selected pack's category, name, and byte count. Selection, editing, and key import send nothing to OpenAI.
 
-### Using Assist with this meeting
+### Using Copilot
 
-The Assist section sits below the live transcript. Opening, reviewing, or dismissing it sends nothing. It becomes send-eligible only while a meeting session is active, at least one finalized segment is available, OpenAI is selected, an encrypted credential is configured, the question is non-empty, the exact current disclosure has been accepted for that meeting, and the main-owned provider-context preview is not blocked.
+Copilot sits in the right insight rail beside the live transcript on wide layouts and follows the responsive stack on narrow layouts. Opening, reviewing, or dismissing it sends nothing. It becomes send-eligible only while a meeting session is active, at least one finalized segment is available, OpenAI is selected, an encrypted credential is configured, the question is non-empty, the exact current disclosure has been accepted for that meeting, and the main-owned provider-context preview is not blocked.
 
 **Review context** optionally shows a read-only transcript snapshot in the exact text/timestamp/label shape used for provider input, plus a content-free profile/pack summary and request-size preview; **Return to question** closes that inspection view without selecting or caching it. Every explicit Send preflight asks main to freeze a fresh one-use exact request pack, then consumes that same object without silently resnapshotting. Main caps its transcript portion at the most recent 48 finalized segments, 15 minutes, and 12,000 original-transcript characters. The request-size preview reports the profile, selected pack names/categories and component byte counts without including private bodies in renderer status. If the complete serialized provider context exceeds 65,536 UTF-8 bytes, preview and Send fail closed before any provider request.
 
@@ -192,6 +229,8 @@ The app remains usable with only one source selected. If a selected input is den
 - Copy and save operations export finalized transcript text only.
 - Hosted assistance is Off by default. Provider/profile selection, private-context management, key import, setup, and context review make no provider request; only an explicit consent-gated Send can transmit the shown built-in profile, meeting-start-selected private packs, bounded finalized transcript, and question.
 - Assistance output and state remain separate from the transcript, copy, Markdown export, and automatic-save paths.
+- The overlay defaults to an accessible opaque mode. Private mode is an explicit non-guarantee privacy aid; it is never described as hidden from meeting software or invisible to capture.
+- The overlay receives only two bounded finalized segments and the latest bounded suggestion. It receives no raw audio, draft transcript, private-pack body, API key, provider question, or provider-send capability.
 - Starting a successful new meeting replaces the current in-memory transcript. A failed model or permission retry restores the prior transcript, but text worth retaining should still be saved before another meeting.
 
 ## Validation
@@ -202,4 +241,6 @@ pnpm run check
 pnpm run pack
 ```
 
-The unit suite covers streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, immutable meeting-profile selection, encrypted context-pack revisions and limits, content-free request previews, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, and renderer stale-result isolation. Windows source runtime behavior can be exercised locally; no live OpenAI request has been run for this release, and macOS `safeStorage`, menu-bar, login-item, capture, and Assist behavior remains unverified until run on actual macOS hardware.
+The unit and contract suites cover streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, immutable meeting-profile selection, encrypted context-pack revisions and limits, content-free request previews, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, renderer stale-result isolation, the three-region responsive workspace, per-start permission dialog, overlay state/projection bounds, persisted-settings schema, independent shortcut registration/retry/reset, IPC/window hardening, and display recovery.
+
+The v0.6.0 Windows manual runtime acceptance passed in an isolated source app at 1440, 1120, 880, and 760-pixel widths with no workspace overflow. It verified the separate focused permission dialog, rendered Ready/Private/Accessible overlay states, the exact main-owned private-mode disclosure, 80% opacity with content protection and Windows taskbar exclusion, persisted settings after restart, non-persisted click-through with Show recovery, and restoration to opacity 1 with content protection/taskbar exclusion disabled in Accessible mode. Some non-recovery accelerators were reserved by the operating system and were truthfully reported as unavailable while independent shortcuts remained usable. No live OpenAI request has been run for this release, and actual macOS `safeStorage`, menu-bar, login-item, capture, content protection, always-on-top, global-shortcut, overlay, and Assist behavior remains In Review until run on hardware.

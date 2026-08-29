@@ -67,12 +67,18 @@ import {
   createAssistSessionContext,
   resolveProviderExternalLink
 } from "./provider-policy.js";
+import { createOverlayController, OverlayControllerError } from "./overlay-controller.js";
+import { createOverlaySettingsStore } from "./overlay-settings-store.js";
+import { createShortcutRegistry } from "./shortcut-registry.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
 const rendererEntry = path.join(projectRoot, "desktop", "renderer", "index.html");
 const rendererUrl = pathToFileURL(rendererEntry).href;
 const preloadEntry = path.join(projectRoot, "desktop", "preload", "index.cjs");
+const overlayRendererEntry = path.join(projectRoot, "desktop", "renderer", "overlay.html");
+const overlayRendererUrl = pathToFileURL(overlayRendererEntry).href;
+const overlayPreloadEntry = path.join(projectRoot, "desktop", "preload", "overlay.cjs");
 const applicationIcon = path.join(projectRoot, "desktop", "build", "icon.png");
 const backendRoot = app.isPackaged
   ? path.join(process.resourcesPath, "backend")
@@ -139,6 +145,10 @@ let trayController = null;
 let providerController = null;
 let assistController = null;
 let contextPackStore = null;
+let overlayController = null;
+let overlaySettingsStore = null;
+let shortcutRegistry = null;
+let displayRecoveryTimer = null;
 let fakeAssistConsent = null;
 let desktopBootstrapReady = false;
 let pendingWindowShow = null;
@@ -160,6 +170,7 @@ const closeReadyGate = createCloseReadyGate({ timeoutMs: RENDERER_CLOSE_READY_TI
 
 backend.on("event", (event) => {
   if (event.type === "final_segment") assistController?.ingest(event);
+  overlayController?.ingestBackendEvent(event);
   if (event.type === "session_stopped") endAssistSession(event.session_id);
   if (event.type === "session_stopped") lastSessionStopReason = event.reason ?? null;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -333,6 +344,106 @@ function createAssistBoundary() {
   assistController.on("event", sendAssistEvent);
 }
 
+async function createOverlayBoundary() {
+  overlaySettingsStore = createOverlaySettingsStore({
+    userDataPath: app.getPath("userData")
+  });
+  overlayController = createOverlayController({
+    BrowserWindow,
+    screen,
+    platform: process.platform,
+    rendererEntry: overlayRendererEntry,
+    rendererUrl: overlayRendererUrl,
+    preloadEntry: overlayPreloadEntry,
+    icon: applicationIcon,
+    settingsStore: overlaySettingsStore,
+    showWorkspace: () => showMainWindow(),
+    focusAssist: () => showMainWindow({ focusAssist: true }),
+    cancelAssist: () => assistController?.cancel("canceled"),
+    shouldAllowClose: () => quitRequested || allowWindowClose,
+    onStatusChange: sendOverlayStatusToWorkspace
+  });
+  await overlayController.initialize();
+  await refreshOverlayProviderState();
+}
+
+function createShortcutBoundary() {
+  shortcutRegistry = createShortcutRegistry({
+    globalShortcut,
+    handlers: {
+      showHide: () => overlayController?.toggleVisibility(),
+      focusAssist: () => showMainWindow({ focusAssist: true }),
+      cancelAssist: () => assistController?.cancel("canceled"),
+      opacityUp: () => {
+        void overlayController?.adjustOpacity("up").catch(() => {});
+      },
+      opacityDown: () => {
+        void overlayController?.adjustOpacity("down").catch(() => {});
+      },
+      toggleClickThrough: () => {
+        try {
+          overlayController?.toggleClickThrough();
+        } catch {
+          // The visible shortcut status explains why recovery is unavailable.
+        }
+      }
+    }
+  });
+  updateShortcutStatus(shortcutRegistry.registerAll());
+}
+
+function updateShortcutStatus(status) {
+  overlayController?.setShortcutStatus(status);
+  return status;
+}
+
+function sendOverlayStatusToWorkspace(status) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoadingMainFrame()) return;
+  try {
+    mainWindow.webContents.send("meeting:overlay-status", status);
+  } catch {
+    // Companion status is informational and does not affect capture.
+  }
+}
+
+async function refreshOverlayProviderState() {
+  if (!overlayController) return;
+  try {
+    const assist = await getRendererAssistStatus();
+    overlayController.setProviderStatus(assist.provider);
+  } catch {
+    overlayController.setProviderStatus({
+      mode: settings.providerMode,
+      configured: false,
+      consentGranted: false,
+      inFlight: false
+    });
+  }
+}
+
+function scheduleOverlayPlacementRecovery() {
+  if (!overlayController) return;
+  if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer);
+  displayRecoveryTimer = setTimeout(() => {
+    displayRecoveryTimer = null;
+    void overlayController?.recoverPlacement().catch(() => {});
+  }, 250);
+}
+
+function registerOverlayDisplayRecovery() {
+  for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) {
+    screen.on(eventName, scheduleOverlayPlacementRecovery);
+  }
+}
+
+function unregisterOverlayDisplayRecovery() {
+  if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer);
+  displayRecoveryTimer = null;
+  for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) {
+    screen.removeListener(eventName, scheduleOverlayPlacementRecovery);
+  }
+}
+
 function isDevelopmentFakeAssistEnabled() {
   return !app.isPackaged && process.env.MEETING_TRANSCRIBER_FAKE_ASSIST === "1";
 }
@@ -349,6 +460,7 @@ function startAssistSession(sessionId, sessionContext = null) {
   } catch {
     assistController = null;
   }
+  void refreshOverlayProviderState();
 }
 
 function endAssistSession(sessionId) {
@@ -363,9 +475,11 @@ function endAssistSession(sessionId) {
   } catch {
     // Provider cleanup cannot change local finalization.
   }
+  void refreshOverlayProviderState();
 }
 
 function sendAssistEvent(event) {
+  overlayController?.ingestAssistEvent(event);
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
     mainWindow.webContents.send("meeting:assist-event", event);
@@ -463,6 +577,7 @@ function configureMediaCapture() {
 function registerIpc() {
   ipcMain.handle("meeting:start", async (event, options, assistSelection, ...args) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    let startTransitionBegan = false;
     try {
       if (args.length !== 0) {
         throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
@@ -479,19 +594,25 @@ function registerIpc() {
         };
       }
       const sessionContext = await resolveAssistSelection(assistSelection);
+      startTransitionBegan = true;
       trayController?.setState("preparing");
+      overlayController?.setMeetingState("preparing");
       const engine = await backend.startSession(createBackendStartOptions(options, {
         userDataPath: app.getPath("userData"),
         catalog: modelCatalog
       }));
       meetingInProgress = true;
+      overlayController?.beginSession(engine.session_id);
       startAssistSession(engine.session_id, sessionContext);
       successfulStop = false;
       lastSessionStopReason = null;
       transcriptFiles.resetCurrentAutoSavePath();
       return { ok: true, engine };
     } catch (error) {
-      trayController?.setState("error");
+      if (startTransitionBegan) {
+        trayController?.setState("error");
+        overlayController?.setMeetingState("error");
+      }
       const contextError = typeof error?.code === "string"
         && (error.code.startsWith("context_pack_")
           || error.code.startsWith("meeting_profile_")
@@ -534,6 +655,7 @@ function registerIpc() {
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       meetingInProgress = false;
       successfulStop = hadMeeting && lastSessionStopReason === "stopped";
+      overlayController?.setMeetingState("stopped");
       return {
         ok: true,
         successful: successfulStop,
@@ -545,6 +667,7 @@ function registerIpc() {
       // the desktop state retryable even when finalization itself failed.
       meetingInProgress = false;
       successfulStop = false;
+      overlayController?.setMeetingState("error");
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       return { ok: false, error: publicError(error, "The transcript could not be finalized normally.") };
     }
@@ -639,6 +762,7 @@ function registerIpc() {
         mode: settings.providerMode,
         model: settings.openAIModel
       });
+      void refreshOverlayProviderState();
       return { ok: true, settings: getRendererSettings() };
     } catch (error) {
       return { ok: false, error: publicError(error, "Settings could not be saved.") };
@@ -696,7 +820,9 @@ function registerIpc() {
       const clipboardValue = clipboard.readText("clipboard");
       await providerController.importCredential(clipboardValue.trim());
       if (clipboard.readText("clipboard") === clipboardValue) clipboard.clear("clipboard");
-      return { ok: true, provider: await getRendererProviderStatus() };
+      const provider = await getRendererProviderStatus();
+      overlayController?.setProviderStatus(provider);
+      return { ok: true, provider };
     } catch (error) {
       return { ok: false, error: providerPublicError(error) };
     }
@@ -722,6 +848,7 @@ function registerIpc() {
       settingsError = true;
     }
     const rendererStatus = await getRendererProviderStatus().catch(() => null);
+    overlayController?.setProviderStatus(rendererStatus ?? { mode: "off" });
     const safeState = {
       settings: getRendererSettings(),
       provider: rendererStatus
@@ -818,7 +945,9 @@ function registerIpc() {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     if (args.length !== 0) return invalidAssistRequestResult();
     try {
-      return { ok: true, assist: await getRendererAssistStatus() };
+      const assist = await getRendererAssistStatus();
+      overlayController?.setProviderStatus(assist.provider);
+      return { ok: true, assist };
     } catch {
       return { ok: false, error: "Meeting assistance status could not be checked." };
     }
@@ -858,7 +987,9 @@ function registerIpc() {
           });
         }
       }
-      return { ok: true, assist: await getRendererAssistStatus() };
+      const assist = await getRendererAssistStatus();
+      overlayController?.setProviderStatus(assist.provider);
+      return { ok: true, assist };
     } catch (error) {
       return { ok: false, error: assistConsentError(error) };
     }
@@ -890,6 +1021,111 @@ function registerIpc() {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     if (args.length !== 0) return invalidAssistRequestResult();
     return { ok: true, canceled: Boolean(assistController?.cancel("canceled")) };
+  });
+
+  ipcMain.handle("meeting:overlay-status", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!overlayController) return overlayUnavailableResult();
+    return { ok: true, status: overlayController.getStatus() };
+  });
+
+  ipcMain.handle("meeting:overlay-show", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!overlayController) return overlayUnavailableResult();
+    return { ok: true, status: overlayController.show({ focus: true }) };
+  });
+
+  ipcMain.handle("meeting:overlay-hide", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!overlayController) return overlayUnavailableResult();
+    return { ok: true, status: overlayController.hide() };
+  });
+
+  ipcMain.handle("meeting:overlay-settings-update", async (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0 || !overlayController) {
+      return overlayController ? invalidOverlayRequestResult() : overlayUnavailableResult();
+    }
+    try {
+      return { ok: true, status: await overlayController.updateSettings(value) };
+    } catch (error) {
+      return overlayErrorResult(error);
+    }
+  });
+
+  ipcMain.handle("meeting:overlay-private-acknowledge", (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0 || !overlayController) {
+      return overlayController ? invalidOverlayRequestResult() : overlayUnavailableResult();
+    }
+    try {
+      return { ok: true, ...overlayController.acknowledgePrivateMode(value) };
+    } catch (error) {
+      return overlayErrorResult(error);
+    }
+  });
+
+  ipcMain.handle("meeting:overlay-reset", async (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!overlayController) return overlayUnavailableResult();
+    try {
+      return { ok: true, status: await overlayController.reset() };
+    } catch (error) {
+      return overlayErrorResult(error);
+    }
+  });
+
+  ipcMain.handle("meeting:overlay-shortcuts-retry", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!shortcutRegistry) return overlayUnavailableResult();
+    return { ok: true, status: updateShortcutStatus(shortcutRegistry.retryUnavailable()) };
+  });
+
+  ipcMain.handle("meeting:overlay-shortcuts-reset", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!shortcutRegistry) return overlayUnavailableResult();
+    return { ok: true, status: updateShortcutStatus(shortcutRegistry.reset()) };
+  });
+
+  ipcMain.handle("meeting:overlay-click-through-toggle", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    if (!overlayController) return overlayUnavailableResult();
+    try {
+      return { ok: true, status: overlayController.toggleClickThrough() };
+    } catch (error) {
+      return overlayErrorResult(error);
+    }
+  });
+
+  ipcMain.handle("overlay:status", (event, ...args) => {
+    if (!isTrustedOverlayIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    return { ok: true, status: overlayController.getStatus() };
+  });
+
+  ipcMain.handle("overlay:show-workspace", (event, ...args) => {
+    if (!isTrustedOverlayIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    return { ok: true, ...overlayController.showMainWorkspace() };
+  });
+
+  ipcMain.handle("overlay:focus-assist", (event, ...args) => {
+    if (!isTrustedOverlayIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    return { ok: true, ...overlayController.focusMainAssist() };
+  });
+
+  ipcMain.handle("overlay:hide", (event, ...args) => {
+    if (!isTrustedOverlayIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidOverlayRequestResult();
+    return { ok: true, status: overlayController.hide() };
   });
 
   ipcMain.handle("meeting:platform", (event) => {
@@ -956,7 +1192,12 @@ function registerIpc() {
   ipcMain.on("meeting:tray-state", (event, value) => {
     if (!isTrustedIpcEvent(event)) return;
     const trayState = validateTrayStateDto(value);
-    if (trayState) trayController?.setState(trayState.state);
+    if (!trayState) return;
+    trayController?.setState(trayState.state);
+    const overlayState = trayState.state === "idle" ? "ready" : trayState.state;
+    overlayController?.setMeetingState(overlayState, {
+      reveal: trayState.state === "transcribing"
+    });
   });
 }
 
@@ -1171,6 +1412,10 @@ function isTrustedIpcEvent(event) {
   );
 }
 
+function isTrustedOverlayIpcEvent(event) {
+  return overlayController?.isTrustedEvent(event) === true;
+}
+
 function settingsAreLocked() {
   return meetingInProgress || ["starting", "stopping"].includes(backend.sessionState);
 }
@@ -1227,6 +1472,24 @@ function assistRequestError(error) {
 
 function invalidAssistRequestResult() {
   return { ok: false, error: "The assistance request contains an unsupported field." };
+}
+
+function invalidOverlayRequestResult() {
+  return { ok: false, error: "The companion request contains an unsupported field." };
+}
+
+function overlayUnavailableResult() {
+  return { ok: false, error: "The companion overlay is unavailable." };
+}
+
+function overlayErrorResult(error) {
+  const messages = new Map([
+    ["overlay_acknowledgement_required", "Review and acknowledge the private-mode disclosure before enabling it."],
+    ["overlay_disclosure_mismatch", "Review and acknowledge the current private-mode disclosure before continuing."],
+    ["overlay_recovery_unavailable", "Click-through requires the Show or hide overlay recovery shortcut."]
+  ]);
+  const known = error instanceof OverlayControllerError ? messages.get(error.code) : null;
+  return { ok: false, error: known ?? "The companion setting could not be changed." };
 }
 
 function transcriptErrorResult(error, fallback) {
@@ -1307,15 +1570,22 @@ if (!hasSingleInstanceLock) {
       // prevent local transcription from starting.
       assistController = null;
     }
+    try {
+      await createOverlayBoundary();
+      registerOverlayDisplayRecovery();
+    } catch {
+      overlayController?.destroy();
+      overlayController = null;
+      overlaySettingsStore = null;
+    }
     registerIpc();
     configureMediaCapture();
     createApplicationTray();
     try {
-      globalShortcut.register("CommandOrControl+Shift+A", () => {
-        showMainWindow({ focusAssist: true });
-      });
+      createShortcutBoundary();
     } catch {
-      // The in-window control remains available when the OS reserves the key.
+      shortcutRegistry?.destroy();
+      shortcutRegistry = null;
     }
     desktopBootstrapReady = true;
     createWindow();
@@ -1334,9 +1604,13 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
-    globalShortcut.unregister("CommandOrControl+Shift+A");
+    unregisterOverlayDisplayRecovery();
+    shortcutRegistry?.destroy();
+    shortcutRegistry = null;
     assistController?.cancel("session_reset");
     providerController?.cancelRequest();
+    overlayController?.destroy();
+    overlayController = null;
     trayController?.destroy();
     trayController = null;
   });

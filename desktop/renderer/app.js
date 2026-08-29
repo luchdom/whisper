@@ -89,6 +89,11 @@ const announcedFinalIds = new Set();
 
 const elements = {
   action: byId("session-action"),
+  ribbonStatusDot: byId("ribbon-status-dot"),
+  ribbonStatus: byId("ribbon-status"),
+  ribbonSummary: byId("ribbon-summary"),
+  ribbonElapsed: byId("ribbon-elapsed"),
+  setupRailToggle: byId("toggle-setup-rail"),
   sessionDot: byId("session-dot"),
   sessionStatus: byId("session-status"),
   elapsed: byId("elapsed-time"),
@@ -115,9 +120,24 @@ const elements = {
   copy: byId("copy-transcript"),
   save: byId("save-transcript"),
   settingsButton: byId("open-settings"),
+  overlayToggle: byId("toggle-overlay"),
   settingsDialog: byId("settings-dialog"),
   settingsCloseTop: byId("close-settings-top"),
   settingsClose: byId("close-settings"),
+  overlaySettingsSection: byId("overlay-settings-section"),
+  overlayStatus: byId("overlay-status"),
+  overlayAccessible: byId("overlay-mode-accessible"),
+  overlayPrivate: byId("overlay-mode-private"),
+  overlayOpacityRow: byId("overlay-opacity-row"),
+  overlayOpacity: byId("overlay-opacity"),
+  overlayOpacityValue: byId("overlay-opacity-value"),
+  overlayDisclosure: byId("overlay-mode-disclosure"),
+  overlayAcknowledged: byId("overlay-disclosure-acknowledged"),
+  overlayShortcutList: byId("overlay-shortcut-list"),
+  showOverlay: byId("show-overlay"),
+  resetOverlay: byId("reset-overlay"),
+  retryOverlayShortcuts: byId("retry-overlay-shortcuts"),
+  resetOverlayShortcuts: byId("reset-overlay-shortcuts"),
   diarization: byId("diarization-toggle"),
   translation: byId("translation-toggle"),
   translationAvailability: byId("translation-availability"),
@@ -213,6 +233,13 @@ const elements = {
   assistContextCloseTop: byId("close-assist-context-top"),
   assistContextBack: byId("back-assist-context"),
   assistContextUse: byId("use-assist-context"),
+  workspaceTabs: [byId("workspace-tab-copilot"), byId("workspace-tab-debrief")],
+  workspaceCopilotPanel: byId("workspace-panel-copilot"),
+  workspaceDebriefPanel: byId("workspace-panel-debrief"),
+  sessionConsentDialog: byId("session-consent-dialog"),
+  sessionConsentCloseTop: byId("close-session-consent-top"),
+  sessionConsentCancel: byId("cancel-session-consent"),
+  sessionConsentConfirm: byId("confirm-session-consent"),
   trayLocationLabels: document.querySelectorAll("[data-tray-location]"),
   engineSetupCard: byId("engine-setup-card"),
   engineSetupTitle: byId("engine-setup-title"),
@@ -268,6 +295,13 @@ let editingSpeakerId = null;
 let autoSaveRefreshPending = 0;
 let platformInfo = { startupSupported: false, trayLocation: "notification area" };
 let lastReportedTrayState = null;
+let activeWorkspaceTab = "copilot";
+let sessionConsentReturnTarget = null;
+let overlayStatus = null;
+let overlayStatusPromise = null;
+let overlayBusy = false;
+let overlayFeedback = null;
+let setupRailCollapsed = false;
 
 const capture = new CaptureController({
   bridge,
@@ -279,7 +313,7 @@ const capture = new CaptureController({
 elements.action.addEventListener("click", () => {
   if (state.phase === "recording") void stopSession();
   else if (!state.active && !isEngineSetupReady()) openSettings();
-  else if (!state.active) void beginStartSession();
+  else if (!state.active) openSessionConsent();
 });
 elements.copy.addEventListener("click", () => void copyTranscript());
 elements.save.addEventListener("click", () => void saveTranscriptCopy());
@@ -341,15 +375,37 @@ elements.assistResetRequest.addEventListener("click", resetAssistRequest);
 elements.assistContextCloseTop.addEventListener("click", closeAssistContextReview);
 elements.assistContextBack.addEventListener("click", closeAssistContextReview);
 elements.assistContextUse.addEventListener("click", useReviewedAssistContext);
+for (const tab of elements.workspaceTabs) {
+  tab.addEventListener("click", () => setWorkspaceTab(tab.id.endsWith("debrief") ? "debrief" : "copilot"));
+  tab.addEventListener("keydown", handleWorkspaceTabKeydown);
+}
 elements.settingsButton.addEventListener("click", () => openSettings());
+elements.overlayToggle.addEventListener("click", () => void toggleOverlayVisibility());
+elements.setupRailToggle.addEventListener("click", toggleSetupRail);
 elements.settingsCloseTop.addEventListener("click", closeSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
+elements.overlayAccessible.addEventListener("change", () => void updateOverlaySettingsFromForm());
+elements.overlayPrivate.addEventListener("change", () => void updateOverlaySettingsFromForm());
+elements.overlayOpacity.addEventListener("change", () => void updateOverlaySettingsFromForm());
+elements.overlayAcknowledged.addEventListener("change", renderOverlaySettings);
+elements.showOverlay.addEventListener("click", () => void runOverlayAction("showOverlay"));
+elements.resetOverlay.addEventListener("click", () => void runOverlayAction("resetOverlay"));
+elements.retryOverlayShortcuts.addEventListener("click", () => void runOverlayAction("retryOverlayShortcuts"));
+elements.resetOverlayShortcuts.addEventListener("click", () => void runOverlayAction("resetOverlayShortcuts"));
+elements.sessionConsentCloseTop.addEventListener("click", closeSessionConsent);
+elements.sessionConsentCancel.addEventListener("click", closeSessionConsent);
+elements.sessionConsentConfirm.addEventListener("click", confirmSessionConsent);
 elements.chooseFolder.addEventListener("click", () => void chooseTranscriptFolder());
 elements.clearFolder.addEventListener("click", () => void clearTranscriptFolder());
 elements.openPythonDownload.addEventListener("click", () => void openPythonDownloadPage());
 elements.copySetupCommand.addEventListener("click", () => void copySetupCommand());
 elements.checkEngineSetup.addEventListener("click", () => void checkEngineSetup());
 elements.settingsDialog.addEventListener("close", () => elements.settingsButton.focus());
+elements.sessionConsentDialog.addEventListener("close", () => {
+  const returnTarget = sessionConsentReturnTarget;
+  sessionConsentReturnTarget = null;
+  if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
+});
 elements.contextPacksDialog.addEventListener("close", () => elements.manageContextPacks.focus());
 elements.assistContextDialog.addEventListener("close", () => {
   if (assistExpanded && !elements.assistReviewContext.disabled) elements.assistReviewContext.focus();
@@ -374,6 +430,15 @@ bridge.onBackendEvent(handleBackendEvent);
 bridge.onTrayAction((action) => void handleTrayAction(action));
 bridge.onAssistEvent(handleAssistEvent);
 bridge.onAssistShortcut(() => void revealAssist({ focusQuestion: true }));
+if (typeof bridge?.onAssistPrefill === "function") {
+  bridge.onAssistPrefill((value) => prefillCopilotQuestion(value));
+}
+if (typeof bridge?.onOverlayStatus === "function") {
+  bridge.onOverlayStatus((value) => {
+    overlayStatus = sanitizeOverlayStatus(value);
+    renderOverlaySettings();
+  });
+}
 bridge.onBeforeClose(() => {
   void stopForClose().finally(() => bridge.notifyCloseReady());
 });
@@ -424,6 +489,7 @@ async function initialize() {
   }
   settingsReady = true;
   renderSession();
+  if (hasOverlayBridge()) void refreshOverlayStatus();
   void refreshAssistStatus();
 }
 
@@ -904,6 +970,22 @@ function beginStartSession() {
   return startPromise;
 }
 
+function openSessionConsent() {
+  if (state.active || startPromise || elements.sessionConsentDialog.open) return;
+  sessionConsentReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : elements.action;
+  elements.sessionConsentDialog.showModal();
+  queueMicrotask(() => elements.sessionConsentConfirm.focus());
+}
+
+function closeSessionConsent() {
+  if (elements.sessionConsentDialog.open) elements.sessionConsentDialog.close();
+}
+
+function confirmSessionConsent() {
+  closeSessionConsent();
+  void beginStartSession();
+}
+
 async function startSession(generation) {
   const startSignal = startGate.signalFor(generation);
   const speakerRefreshPromise = settleSpeakerRenameBeforeTransition();
@@ -1245,6 +1327,14 @@ function renderSession() {
 
   elements.sessionStatus.textContent = presentation.text;
   elements.sessionDot.className = `status-dot ${presentation.dot}`;
+  elements.ribbonStatus.textContent = presentation.text;
+  elements.ribbonStatusDot.className = `status-dot ${presentation.dot}`;
+  const selectedModel = modelById.get(settings.model);
+  const sourceCount = Number(elements.sourceSystem.checked) + Number(elements.sourceMicrophone.checked);
+  const sourceLabel = sourceCount === 2 ? "Meeting audio + microphone" : sourceCount === 1
+    ? (elements.sourceSystem.checked ? "Meeting audio" : "Microphone")
+    : "No source selected";
+  elements.ribbonSummary.textContent = `${sourceLabel} · ${selectedModel?.label ?? "Local model"}`;
   elements.action.textContent = presentation.action;
   elements.action.disabled = presentation.disabled
     || !settingsReady
@@ -1314,6 +1404,7 @@ function renderSettingsAvailability() {
   renderTranslationStatus();
   renderEngineSetup();
   renderProviderSettings();
+  renderOverlaySettings();
 }
 
 function renderTranscript() {
@@ -1586,6 +1677,239 @@ function openSettings() {
 
 function closeSettings() {
   elements.settingsDialog.close();
+}
+
+function hasOverlayBridge() {
+  return typeof bridge?.getOverlayStatus === "function";
+}
+
+function sanitizeOverlayStatus(value) {
+  const status = value?.status && typeof value.status === "object" ? value.status : value;
+  if (!status || typeof status !== "object" || Array.isArray(status)) return null;
+  const raw = status.overlay && typeof status.overlay === "object" ? status.overlay : status;
+  const settings = status.settings && typeof status.settings === "object" ? status.settings : raw.settings;
+  const mode = settings?.mode === "private" || raw.mode === "private" ? "private" : "accessible";
+  const opacityValue = settings?.opacity ?? raw.opacity;
+  const opacity = Number.isFinite(opacityValue) ? Math.min(1, Math.max(0.6, opacityValue)) : 1;
+  const shortcutValues = Array.isArray(status.shortcuts?.shortcuts)
+    ? status.shortcuts.shortcuts
+    : Array.isArray(status.shortcuts)
+      ? status.shortcuts
+      : Array.isArray(raw.shortcuts)
+        ? raw.shortcuts
+        : [];
+  const shortcuts = shortcutValues
+    .filter((shortcut) => shortcut && typeof shortcut === "object")
+    .map((shortcut) => ({
+      label: typeof shortcut.label === "string" ? shortcut.label : "Shortcut",
+      accelerator: formatShortcutAccelerator(shortcut.accelerator),
+      registered: shortcut.available === true || shortcut.registered === true || shortcut.state === "registered",
+      message: typeof shortcut.message === "string" ? shortcut.message : ""
+    }));
+  const disclosureValue = status.disclosure && typeof status.disclosure === "object"
+    ? status.disclosure
+    : raw.disclosure;
+  const disclosure = disclosureValue
+    && typeof disclosureValue.version === "string"
+    && typeof disclosureValue.body === "string"
+    ? Object.freeze({
+        version: disclosureValue.version,
+        title: typeof disclosureValue.title === "string" ? disclosureValue.title : "Private overlay mode",
+        body: disclosureValue.body,
+        supported: disclosureValue.supported === true
+      })
+    : null;
+  return Object.freeze({
+    visible: raw.visible === true,
+    mode,
+    opacity,
+    shortcuts: Object.freeze(shortcuts),
+    disclosure
+  });
+}
+
+function formatShortcutAccelerator(value) {
+  if (typeof value !== "string" || value.length === 0) return "Not assigned";
+  return value.replace("CommandOrControl", "Ctrl/Cmd");
+}
+
+function renderOverlaySettings() {
+  const available = hasOverlayBridge();
+  elements.overlaySettingsSection.hidden = !available;
+  elements.overlayToggle.hidden = !available || (typeof bridge?.showOverlay !== "function" && typeof bridge?.hideOverlay !== "function");
+  if (!available) return;
+  const mode = overlayStatus?.mode ?? "accessible";
+  const opacity = Math.round((overlayStatus?.opacity ?? 1) * 100);
+  elements.overlayAccessible.checked = mode !== "private";
+  elements.overlayPrivate.checked = mode === "private";
+  elements.overlayOpacity.value = String(opacity);
+  elements.overlayOpacityValue.textContent = `${opacity}%`;
+  elements.overlayDisclosure.textContent = overlayStatus?.disclosure?.body
+    ?? "Private mode is unavailable until the app can provide its current screen-capture disclosure.";
+  elements.overlayOpacityRow.hidden = mode !== "private";
+  elements.overlayToggle.textContent = overlayStatus?.visible ? "Hide overlay" : "Overlay";
+  const statusMessage = overlayStatusPromise
+    ? "Checking overlay and shortcut status…"
+    : overlayStatus
+      ? `${overlayStatus.visible ? "Overlay visible" : "Overlay hidden"} · ${mode === "private" ? "Private mode" : "Accessible mode"}`
+      : "Overlay status is unavailable. The main meeting workspace remains available.";
+  elements.overlayStatus.textContent = overlayFeedback?.message ?? statusMessage;
+  elements.overlayStatus.dataset.tone = overlayFeedback?.tone ?? "status";
+  elements.overlayStatus.setAttribute("role", overlayFeedback?.tone === "error" ? "alert" : "status");
+  elements.overlayStatus.setAttribute("aria-live", overlayFeedback?.tone === "error" ? "assertive" : "polite");
+  const shortcuts = overlayStatus?.shortcuts ?? [];
+  elements.overlayShortcutList.replaceChildren(...shortcuts.map((shortcut) => {
+    const item = document.createElement("div");
+    item.className = "overlay-shortcut";
+    const status = shortcut.registered ? "Available" : "Unavailable";
+    item.textContent = `${shortcut.label}: ${shortcut.accelerator} · ${shortcut.message || status}`;
+    return item;
+  }));
+  if (shortcuts.length === 0 && !overlayStatusPromise) {
+    const item = document.createElement("div");
+    item.className = "overlay-shortcut";
+    item.textContent = "Shortcut status will appear when the overlay is available.";
+    elements.overlayShortcutList.replaceChildren(item);
+  }
+  const privateUnacknowledged = mode === "private" && !elements.overlayAcknowledged.checked;
+  const settingsMutable = typeof bridge?.updateOverlaySettings === "function";
+  elements.overlayPrivate.disabled = overlayBusy || !settingsMutable;
+  elements.overlayAccessible.disabled = overlayBusy || !settingsMutable;
+  elements.overlayOpacity.disabled = overlayBusy || !settingsMutable || mode !== "private" || privateUnacknowledged;
+  elements.showOverlay.disabled = overlayBusy || typeof bridge?.showOverlay !== "function";
+  elements.resetOverlay.disabled = overlayBusy || typeof bridge?.resetOverlay !== "function";
+  elements.retryOverlayShortcuts.disabled = overlayBusy || typeof bridge?.retryOverlayShortcuts !== "function";
+  elements.resetOverlayShortcuts.disabled = overlayBusy || typeof bridge?.resetOverlayShortcuts !== "function";
+}
+
+function setOverlayFeedback(message, tone = "error") {
+  overlayFeedback = { message, tone };
+}
+
+function clearOverlayFeedback() {
+  overlayFeedback = null;
+}
+
+function refreshOverlayStatus() {
+  if (!hasOverlayBridge() || overlayStatusPromise) return overlayStatusPromise ?? Promise.resolve();
+  const operation = (async () => {
+    try {
+      const result = await bridge.getOverlayStatus();
+      if (result?.ok === false) throw new Error(result.error || "Overlay status could not be loaded.");
+      overlayStatus = sanitizeOverlayStatus(result);
+    } catch {
+      overlayStatus = null;
+    }
+  })();
+  overlayStatusPromise = operation.finally(() => {
+    overlayStatusPromise = null;
+    renderOverlaySettings();
+  });
+  renderOverlaySettings();
+  return overlayStatusPromise;
+}
+
+async function updateOverlaySettingsFromForm() {
+  if (!hasOverlayBridge() || overlayBusy || typeof bridge?.updateOverlaySettings !== "function") return;
+  const mode = elements.overlayPrivate.checked ? "private" : "accessible";
+  if (mode === "private" && !elements.overlayAcknowledged.checked) {
+    elements.overlayAccessible.checked = true;
+    elements.overlayPrivate.checked = false;
+    setOverlayFeedback("Acknowledge the private-mode disclosure before enabling it.");
+    renderOverlaySettings();
+    return;
+  }
+  const opacity = mode === "private" ? Number(elements.overlayOpacity.value) / 100 : 1;
+  clearOverlayFeedback();
+  overlayBusy = true;
+  renderOverlaySettings();
+  try {
+    if (mode === "private") {
+      if (typeof bridge?.acknowledgeOverlayPrivateMode !== "function"
+        || typeof overlayStatus?.disclosure?.version !== "string") {
+        throw new Error("The current private-mode disclosure is unavailable.");
+      }
+      const acknowledgement = await bridge.acknowledgeOverlayPrivateMode({
+        version: overlayStatus.disclosure.version
+      });
+      if (acknowledgement?.ok === false) {
+        throw new Error(acknowledgement.error || "The private-mode disclosure could not be acknowledged.");
+      }
+    }
+    const result = await bridge.updateOverlaySettings({ mode, opacity });
+    if (result?.ok === false) throw new Error(result.error || "Overlay settings could not be saved.");
+    overlayStatus = sanitizeOverlayStatus(result) ?? overlayStatus;
+    clearOverlayFeedback();
+  } catch (error) {
+    setOverlayFeedback(error?.message || "Overlay settings could not be saved.");
+  } finally {
+    overlayBusy = false;
+    renderOverlaySettings();
+  }
+}
+
+async function runOverlayAction(method) {
+  if (!hasOverlayBridge() || overlayBusy || !["showOverlay", "hideOverlay", "resetOverlay", "retryOverlayShortcuts", "resetOverlayShortcuts"].includes(method)) return;
+  if (typeof bridge[method] !== "function") return;
+  clearOverlayFeedback();
+  overlayBusy = true;
+  renderOverlaySettings();
+  try {
+    const result = await bridge[method]();
+    if (result?.ok === false) throw new Error(result.error || "Overlay action could not be completed.");
+    overlayStatus = sanitizeOverlayStatus(result) ?? overlayStatus;
+    await refreshOverlayStatus();
+    clearOverlayFeedback();
+  } catch (error) {
+    setOverlayFeedback(error?.message || "Overlay action could not be completed.");
+  } finally {
+    overlayBusy = false;
+    renderOverlaySettings();
+  }
+}
+
+function toggleOverlayVisibility() {
+  if (!hasOverlayBridge()) return Promise.resolve();
+  if (overlayStatus?.visible && typeof bridge.hideOverlay === "function") return runOverlayAction("hideOverlay");
+  return runOverlayAction("showOverlay");
+}
+
+function toggleSetupRail() {
+  setupRailCollapsed = !setupRailCollapsed;
+  document.body.classList.toggle("setup-rail-collapsed", setupRailCollapsed);
+  elements.setupRailToggle.setAttribute("aria-expanded", String(!setupRailCollapsed));
+  elements.setupRailToggle.textContent = setupRailCollapsed ? "Show setup" : "Hide setup";
+}
+
+function setWorkspaceTab(tab, { focus = false } = {}) {
+  activeWorkspaceTab = tab === "debrief" ? "debrief" : "copilot";
+  const isCopilot = activeWorkspaceTab === "copilot";
+  const [copilotTab, debriefTab] = elements.workspaceTabs;
+  copilotTab.setAttribute("aria-selected", String(isCopilot));
+  copilotTab.tabIndex = isCopilot ? 0 : -1;
+  debriefTab.setAttribute("aria-selected", String(!isCopilot));
+  debriefTab.tabIndex = isCopilot ? -1 : 0;
+  elements.workspaceCopilotPanel.hidden = !isCopilot;
+  elements.workspaceDebriefPanel.hidden = isCopilot;
+  if (focus) (isCopilot ? copilotTab : debriefTab).focus();
+}
+
+function handleWorkspaceTabKeydown(event) {
+  const current = elements.workspaceTabs.indexOf(event.currentTarget);
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const target = event.key === "Home" ? 0 : event.key === "End" ? elements.workspaceTabs.length - 1
+    : (current + (event.key === "ArrowRight" ? 1 : -1) + elements.workspaceTabs.length) % elements.workspaceTabs.length;
+  setWorkspaceTab(target === 1 ? "debrief" : "copilot", { focus: true });
+}
+
+function prefillCopilotQuestion(value) {
+  if (typeof value !== "string" || !value.trim()) return;
+  setWorkspaceTab("copilot");
+  void revealAssist({ focusQuestion: false });
+  elements.assistQuestion.value = value.slice(0, ASSIST_QUESTION_MAX_CHARS);
+  handleAssistQuestionInput();
+  requestAnimationFrame(() => elements.assistQuestion.focus());
 }
 
 function checkEngineSetup() {
@@ -2487,6 +2811,7 @@ function canSendAssistRequest({ currentAttempt = null } = {}) {
 }
 
 async function revealAssist({ focusQuestion = false } = {}) {
+  setWorkspaceTab("copilot");
   if (assistStatus?.sessionId && assistDismissedSessionId === assistStatus.sessionId) {
     assistDismissedSessionId = null;
   }
@@ -3354,6 +3679,8 @@ function updateTimer() {
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
   elements.elapsed.dateTime = `PT${hours}H${minutes}M${seconds}S`;
+  elements.ribbonElapsed.textContent = elements.elapsed.textContent;
+  elements.ribbonElapsed.dateTime = elements.elapsed.dateTime;
 }
 
 function showAlert(message, tone) {
