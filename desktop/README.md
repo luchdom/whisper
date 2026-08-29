@@ -2,7 +2,7 @@
 
 This Electron client captures meeting audio and/or the microphone only after the user presses **Start transcription**, streams separate 16 kHz PCM tracks to the Python sidecar, and shows provisional and finalized transcript segments as they arrive.
 
-Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. There is no hidden recording, meeting copilot, automatic person naming, or audio archive.
+Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
 ## Requirements
 
@@ -45,9 +45,9 @@ Open **Settings > App behavior** to change the defaults:
 
 Only one app instance runs. A second launch shows and focuses the existing window. The explicit `--hidden` argument hides the first window for startup integration without changing capture state.
 
-## Hosted AI provider setup
+## Hosted AI assistance
 
-**Settings > AI assistance** is the configuration and credential foundation for a later meeting-assistance flow. **Off** is the default. **OpenAI API** is available, and **Local model — coming later** is visible but disabled. Selecting OpenAI or its fixed **GPT-5.6 Luna** model only persists the choice; it does not test the connection, contact OpenAI, or send meeting content.
+**Settings > AI assistance** configures the optional hosted meeting-assistance flow. **Off** is the default. **OpenAI API** is available, and **Local model — coming later** is visible but disabled. Selecting OpenAI or its fixed **GPT-5.6 Luna** model only persists the choice; it does not test the connection, contact OpenAI, or send meeting content.
 
 The API key never enters a renderer form or renderer state. **Import from clipboard** invokes an argument-free main-process handler, which reads the clipboard itself, trims surrounding whitespace for validation, encrypts the key with Electron's asynchronous `safeStorage` API, writes ciphertext atomically to the app user-data directory, and clears the clipboard only if its original exact contents are unchanged. Windows uses DPAPI and macOS uses Keychain. **Remove key** asks for confirmation, removes the encrypted record, resets per-session consent state, and turns the provider Off. Settings exposes only privacy-safe absent/configured/invalid/unreadable state, encryption availability, and sanitized errors; no key, ciphertext, local path, or raw exception crosses preload.
 
@@ -55,7 +55,19 @@ If an encrypted credential artifact is malformed or cannot be read, Settings rep
 
 Credential status is checked lazily only when Settings opens. Import and selection do not make a connection test. The main process owns a non-persistent Electron session, fixed Responses endpoint, strict model allowlist, versioned disclosure, request bounds, cancellation, redirect rejection, and sanitized failures. With the provider Off, the controller exits before credential decryption, transcript-context serialization, DNS, or fetch. Provider setup failure cannot prevent local transcription from starting or stopping.
 
-This release does not expose an Assist action and does not send transcripts. The planned request flow requires explicit consent for each meeting and sends only finalized transcript excerpts plus the user's question; audio, drafts, and unconfirmed text remain local. API usage may be billed separately, so the UI opens only fixed current Privacy, Data controls, and Usage pages and does not hardcode a price.
+### Using Assist with this meeting
+
+The Assist section sits below the live transcript. Opening, reviewing, or dismissing it sends nothing. It becomes send-eligible only while a meeting session is active, at least one finalized segment is available, OpenAI is selected, an encrypted credential is configured, the question is non-empty, and the exact current disclosure has been accepted for that meeting.
+
+**Review context** optionally shows a read-only snapshot in the exact text/timestamp/label shape used for provider input; **Return to question** closes that inspection view without selecting or caching it. Every explicit Send preflight asks main to freeze a fresh one-use exact pack, then consumes that same object without silently resnapshotting. Main caps the pack at the most recent 48 finalized segments, 15 minutes, and 12,000 original-transcript characters. The provider input body carries only finalized text, timestamps, and an anonymous speaker/source label for each included segment. It excludes raw audio, provisional text, local translations, internal segment IDs/revisions, language/track metadata, manual renderer-only speaker aliases, and prior assistance conversation. The only user-authored input field in this release is the explicit question. The API key remains outside the renderer and context pack; main decrypts it only for an approved request and uses it as the HTTPS Authorization credential to OpenAI.
+
+Only one assistance request can run at a time. There is no queue or automatic retry. Each request has a 20-second hard timeout, a 512-token provider output cap, a 12,000-character local output cap, a five-second minimum request interval, and a six-request meeting cap. **Cancel** aborts assistance without stopping local transcription. Starting another meeting, stopping the active meeting, changing provider mode, revoking consent, or removing the key also cancels provider work and clears the meeting-scoped context or consent as appropriate.
+
+The result is kept separate from `TranscriptStore`; it never inserts, replaces, or exports transcript text. Request/session/context-revision/sequence checks drop late, superseded, out-of-order, or cross-meeting events. The renderer does not treat the IPC request reply as proof that the separately streamed events have arrived: it waits up to two seconds for the strictly accepted terminal event. If that local delivery-integrity check times out, retry stays blocked for the same context revision so a very late old request cannot attach to a new question; the next finalized segment or a new meeting safely clears the block. A new final after the pack is frozen does not mutate or invalidate that request; the UI identifies the answer as using an earlier context revision. Another question obtains a fresh pack, and meeting start/end clears any unused one. The current OpenAI adapter renders streamed text only as **Suggested response**. It does not synthesize typed transcript-fact sections or source citations from plain provider text.
+
+When the operating system accepts it, the global **Ctrl/Cmd+Shift+A** shortcut only reveals the window and focuses the Assist entry point. It never starts capture or submits a request; the in-window control remains available if the shortcut is reserved by the operating system. Within the question field, **Ctrl/Cmd+Enter** submits only when every normal Send condition is already satisfied; editable controls and dialogs retain their normal keyboard behavior elsewhere.
+
+API usage may be billed separately, so Settings and the consent card open only fixed current Privacy, Data controls, and Usage pages and do not hardcode a price. This workspace has not performed a live OpenAI request, and the Assist runtime remains unverified on macOS hardware.
 
 ## Source setup
 
@@ -107,6 +119,20 @@ pnpm start
 MEETING_TRANSCRIBER_FAKE=1 pnpm start
 ```
 
+Combine the development-only fake sidecar and fake Assist provider to test consent, context inspection, streaming suggestion, cancellation, stale-state handling, and renderer isolation without a local model or OpenAI request:
+
+```powershell
+$env:MEETING_TRANSCRIBER_FAKE = "1"
+$env:MEETING_TRANSCRIBER_FAKE_ASSIST = "1"
+pnpm start
+```
+
+```bash
+MEETING_TRANSCRIBER_FAKE=1 MEETING_TRANSCRIBER_FAKE_ASSIST=1 pnpm start
+```
+
+These flags are ignored in a packaged app. The fake provider reports configured, still requires the meeting-scoped consent checkbox, and emits only the suggestion channel. After the first bounded audio packet, the fake sidecar emits a finalized segment while the session remains active. Manual Review is optional; Send freezes the one-use pack automatically.
+
 ## Speaker labels and renaming
 
 When **Detect anonymous speakers** is enabled, the Python sidecar creates meeting-scoped speaker clusters for silence-delimited utterances on the meeting-audio track. The renderer numbers them by first appearance as **Speaker 1**, **Speaker 2**, and so on.
@@ -152,6 +178,8 @@ The app remains usable with only one source selected. If a selected input is den
 - Speaker embeddings are biometric-derived data. They remain in memory only, are not logged or exported, and reset at meeting end.
 - Transcript/audio payloads are not written to application logs.
 - Copy and save operations export finalized transcript text only.
+- Hosted assistance is Off by default. Setup and context review make no provider request; only an explicit consent-gated Send can transmit the bounded finalized context pack and question.
+- Assistance output and state remain separate from the transcript, copy, Markdown export, and automatic-save paths.
 - Starting a successful new meeting replaces the current in-memory transcript. A failed model or permission retry restores the prior transcript, but text worth retaining should still be saved before another meeting.
 
 ## Validation
@@ -162,4 +190,4 @@ pnpm run check
 pnpm run pack
 ```
 
-The unit suite covers streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, and session state transitions. Windows source runtime behavior can be exercised locally; macOS menu-bar and login-item behavior remains unverified until run on actual macOS hardware.
+The unit suite covers streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, and renderer stale-result isolation. Windows source runtime behavior can be exercised locally; no live OpenAI request has been run for this release, and macOS menu-bar, login-item, capture, and Assist behavior remains unverified until run on actual macOS hardware.

@@ -4,6 +4,7 @@ import {
   clipboard,
   desktopCapturer,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -17,6 +18,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BackendController, STOP_TIMEOUT_MS } from "./backend-controller.js";
 import { BackendSetupManager } from "./backend-setup.js";
+import { AssistController } from "./assist-controller.js";
+import { createAssistProviderAdapter } from "./assist-provider-adapter.js";
+import { normalizeRendererAssistRequest } from "./assist-protocol.js";
 import {
   createCloseCoordinator,
   createCloseReadyGate,
@@ -46,9 +50,14 @@ import {
 import { createStartupService, isHiddenLaunch } from "./startup-service.js";
 import { createTrayController, validateTrayStateDto } from "./tray-controller.js";
 import { createOpenAIProvider } from "./openai-provider.js";
+import { createFakeAssistProvider } from "./fake-assist-provider.js";
 import { ProviderController } from "./provider-controller.js";
 import { createProviderCredentialStore } from "./provider-credential-store.js";
-import { resolveProviderExternalLink } from "./provider-policy.js";
+import {
+  PROVIDER_DISCLOSURE,
+  PROVIDER_DISCLOSURE_VERSION,
+  resolveProviderExternalLink
+} from "./provider-policy.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
@@ -119,6 +128,8 @@ let settingsStore = null;
 let startupService = null;
 let trayController = null;
 let providerController = null;
+let assistController = null;
+let fakeAssistConsent = null;
 let desktopBootstrapReady = false;
 let pendingWindowShow = null;
 let settings = { ...DEFAULT_SETTINGS };
@@ -138,6 +149,8 @@ const closeCoordinator = createCloseCoordinator(closeWindowSafely);
 const closeReadyGate = createCloseReadyGate({ timeoutMs: RENDERER_CLOSE_READY_TIMEOUT_MS });
 
 backend.on("event", (event) => {
+  if (event.type === "final_segment") assistController?.ingest(event);
+  if (event.type === "session_stopped") endAssistSession(event.session_id);
   if (event.type === "session_stopped") lastSessionStopReason = event.reason ?? null;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("meeting:backend-event", event);
@@ -203,29 +216,30 @@ function createWindow() {
   return mainWindow;
 }
 
-function showMainWindow({ focusStart = false } = {}) {
+function showMainWindow({ focusStart = false, focusAssist = false } = {}) {
   if (!desktopBootstrapReady) {
-    queueWindowShow({ focusStart });
+    queueWindowShow({ focusStart, focusAssist });
     return;
   }
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.webContents.isLoadingMainFrame()) {
-    queueWindowShow({ focusStart });
+    queueWindowShow({ focusStart, focusAssist });
     return;
   }
-  revealMainWindow({ focusStart });
+  revealMainWindow({ focusStart, focusAssist });
 }
 
-function revealMainWindow({ focusStart = false } = {}) {
+function revealMainWindow({ focusStart = false, focusAssist = false } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-  if (!focusStart) return;
+  if (!focusStart && !focusAssist) return;
   const signalFocus = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("meeting:tray-action", "focus-start");
+      if (focusAssist) mainWindow.webContents.send("meeting:assist-shortcut");
+      else mainWindow.webContents.send("meeting:tray-action", "focus-start");
     }
   };
   if (mainWindow.webContents.isLoadingMainFrame()) {
@@ -235,9 +249,10 @@ function revealMainWindow({ focusStart = false } = {}) {
   }
 }
 
-function queueWindowShow({ focusStart = false } = {}) {
+function queueWindowShow({ focusStart = false, focusAssist = false } = {}) {
   pendingWindowShow = {
-    focusStart: focusStart || pendingWindowShow?.focusStart === true
+    focusStart: focusStart || pendingWindowShow?.focusStart === true,
+    focusAssist: focusAssist || pendingWindowShow?.focusAssist === true
   };
 }
 
@@ -291,6 +306,56 @@ function createProviderBoundary() {
   });
 }
 
+function createAssistBoundary() {
+  const provider = isDevelopmentFakeAssistEnabled()
+    ? createFakeAssistProvider()
+    : createAssistProviderAdapter({ providerController });
+  assistController = new AssistController({ provider });
+  assistController.on("event", sendAssistEvent);
+}
+
+function isDevelopmentFakeAssistEnabled() {
+  return !app.isPackaged && process.env.MEETING_TRANSCRIBER_FAKE_ASSIST === "1";
+}
+
+function startAssistSession(sessionId) {
+  fakeAssistConsent = null;
+  try {
+    providerController?.startSession(sessionId);
+  } catch {
+    providerController = null;
+  }
+  try {
+    assistController?.startSession(sessionId);
+  } catch {
+    assistController = null;
+  }
+}
+
+function endAssistSession(sessionId) {
+  fakeAssistConsent = null;
+  try {
+    assistController?.endSession(sessionId);
+  } catch {
+    // Local transcription owns the authoritative stop lifecycle.
+  }
+  try {
+    providerController?.stopSession(sessionId);
+  } catch {
+    // Provider cleanup cannot change local finalization.
+  }
+}
+
+function sendAssistEvent(event) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send("meeting:assist-event", event);
+  } catch {
+    // Assistance output is ephemeral. A disappearing renderer cannot affect
+    // local transcription or provider cleanup.
+  }
+}
+
 async function closeWindowSafely({ shouldQuit }) {
   const windowToClose = mainWindow;
   if (windowToClose && !windowToClose.isDestroyed()) {
@@ -302,6 +367,7 @@ async function closeWindowSafely({ shouldQuit }) {
       try {
         await backend.stopSession();
       } finally {
+        endAssistSession(assistController?.getContextSnapshot()?.sessionId);
         // The renderer may be unresponsive or may have timed out before it
         // could update main-owned state. A reopened macOS window must start
         // from an unlocked lifecycle with no stale autosave ownership.
@@ -394,6 +460,7 @@ function registerIpc() {
         catalog: modelCatalog
       }));
       meetingInProgress = true;
+      startAssistSession(engine.session_id);
       successfulStop = false;
       lastSessionStopReason = null;
       transcriptFiles.resetCurrentAutoSavePath();
@@ -428,6 +495,7 @@ function registerIpc() {
     try {
       const hadMeeting = meetingInProgress;
       await backend.stopSession();
+      endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       meetingInProgress = false;
       successfulStop = hadMeeting && lastSessionStopReason === "stopped";
       return {
@@ -441,6 +509,7 @@ function registerIpc() {
       // the desktop state retryable even when finalization itself failed.
       meetingInProgress = false;
       successfulStop = false;
+      endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       return { ok: false, error: publicError(error, "The transcript could not be finalized normally.") };
     }
   });
@@ -660,6 +729,81 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle("meeting:assist-status", async (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    try {
+      return { ok: true, assist: await getRendererAssistStatus() };
+    } catch {
+      return { ok: false, error: "Meeting assistance status could not be checked." };
+    }
+  });
+
+  ipcMain.handle("meeting:assist-context", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    return { ok: true, context: assistController?.freezeContextForRequest() ?? null };
+  });
+
+  ipcMain.handle("meeting:assist-consent", async (event, enabled, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0 || typeof enabled !== "boolean") return invalidAssistRequestResult();
+    try {
+      const snapshot = assistController?.getContextSnapshot();
+      if (!enabled) {
+        fakeAssistConsent = null;
+        providerController?.revokeConsent();
+      } else {
+        if (!snapshot) {
+          return { ok: false, error: "Start a meeting before approving assistance." };
+        }
+        if (isDevelopmentFakeAssistEnabled()) {
+          fakeAssistConsent = Object.freeze({
+            sessionId: snapshot.sessionId,
+            disclosureVersion: PROVIDER_DISCLOSURE_VERSION
+          });
+        } else {
+          if (!providerController) return providerUnavailableResult();
+          providerController.grantConsent({
+            sessionId: snapshot.sessionId,
+            disclosureVersion: PROVIDER_DISCLOSURE_VERSION
+          });
+        }
+      }
+      return { ok: true, assist: await getRendererAssistStatus() };
+    } catch (error) {
+      return { ok: false, error: assistConsentError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:assist-request", async (event, value, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    try {
+      if (!assistController) return providerUnavailableResult();
+      const request = normalizeRendererAssistRequest(value);
+      const snapshot = assistController.getContextSnapshot();
+      if (!snapshot || snapshot.segments.length === 0) {
+        return { ok: false, error: "Wait for finalized transcript text before requesting assistance." };
+      }
+      if (isDevelopmentFakeAssistEnabled()
+        && (fakeAssistConsent?.sessionId !== snapshot.sessionId
+          || fakeAssistConsent?.disclosureVersion !== PROVIDER_DISCLOSURE_VERSION)) {
+        return { ok: false, error: "Approve data sharing for this meeting before requesting assistance." };
+      }
+      const result = await assistController.request(request);
+      return { ok: true, result };
+    } catch (error) {
+      return { ok: false, error: assistRequestError(error) };
+    }
+  });
+
+  ipcMain.handle("meeting:assist-cancel", (event, ...args) => {
+    if (!isTrustedIpcEvent(event)) return unauthorizedResult();
+    if (args.length !== 0) return invalidAssistRequestResult();
+    return { ok: true, canceled: Boolean(assistController?.cancel("canceled")) };
+  });
+
   ipcMain.handle("meeting:platform", (event) => {
     if (!isTrustedIpcEvent(event)) {
       return { platform: "unknown", systemAudioSupported: false, systemAudioRequirement: "Invalid local renderer." };
@@ -748,12 +892,61 @@ async function getRendererProviderStatus() {
     credentialState: status.credentialState,
     removable: status.removable,
     encryptionAvailable: status.encryptionAvailable,
+    consentGranted: status.consentGranted,
+    inFlight: status.inFlight,
     catalog: {
       modes: status.catalog.modes,
       openAIModels: status.catalog.openAIModels
     },
     disclosure: status.disclosure
   };
+}
+
+async function getRendererAssistStatus() {
+  const fakeAssistEnabled = isDevelopmentFakeAssistEnabled();
+  const hostedProvider = fakeAssistEnabled ? null : await getRendererProviderStatus();
+  // Capture the context only after the awaited provider read. JavaScript then
+  // assembles one coherent session/revision/provider DTO without a transition
+  // interleaving between the snapshot and return value.
+  const snapshot = assistController?.getContextSnapshot() ?? null;
+  const provider = fakeAssistEnabled
+    ? {
+        mode: "openai",
+        model: "development-fake",
+        configured: true,
+        credentialState: "configured",
+        removable: false,
+        encryptionAvailable: true,
+        consentGranted: Boolean(
+          snapshot
+            && fakeAssistConsent?.sessionId === snapshot.sessionId
+            && fakeAssistConsent?.disclosureVersion === PROVIDER_DISCLOSURE_VERSION
+        ),
+        inFlight: assistController?.inFlight !== null,
+        disclosure: PROVIDER_DISCLOSURE,
+        fake: true
+      }
+    : {
+        ...hostedProvider,
+        inFlight: assistController?.inFlight !== null,
+        fake: false
+      };
+  return {
+    sessionId: snapshot?.sessionId ?? null,
+    contextRevision: snapshot?.revision ?? 0,
+    contextSummary: buildAssistContextSummary(snapshot),
+    provider
+  };
+}
+
+function buildAssistContextSummary(snapshot) {
+  if (!snapshot || snapshot.segments.length === 0) return null;
+  return Object.freeze({
+    segmentCount: snapshot.segments.length,
+    transcriptChars: snapshot.transcriptChars,
+    startMs: snapshot.segments[0]?.start_ms ?? null,
+    endMs: snapshot.segments.at(-1)?.end_ms ?? null
+  });
 }
 
 function isTrustedRendererFrame(frame) {
@@ -800,6 +993,34 @@ function providerPublicError(error) {
     ["credential_corrupt", "The saved OpenAI API key is invalid. Remove it and add it again."]
   ]);
   return messages.get(error?.code) ?? "Secure provider settings could not be updated.";
+}
+
+function assistConsentError(error) {
+  const messages = new Map([
+    ["provider_off", "Turn on OpenAI assistance in Settings before continuing."],
+    ["provider_unavailable", "The selected assistance provider is unavailable."],
+    ["invalid_session", "The assistance consent does not belong to the active meeting."],
+    ["consent_version_mismatch", "Review the current data-sharing disclosure before continuing."]
+  ]);
+  return messages.get(error?.code) ?? "The assistance consent could not be saved for this meeting.";
+}
+
+function assistRequestError(error) {
+  const messages = new Map([
+    ["assist_session_inactive", "Start a meeting before requesting assistance."],
+    ["assist_busy", "Wait for the current assistance request to finish canceling."],
+    ["assist_context_not_frozen", "Finalized context could not be frozen for this request."],
+    ["assist_context_empty", "Wait for finalized transcript text before requesting assistance."],
+    ["invalid_assist_request", "Enter a valid assistance question."],
+    ["unexpected_assist_field", "The assistance request contains an unsupported field."],
+    ["invalid_question", "Enter a valid assistance question."],
+    ["question_too_large", "The assistance question is too long."]
+  ]);
+  return messages.get(error?.code) ?? "Assistance could not be started. Local transcription continues normally.";
+}
+
+function invalidAssistRequestResult() {
+  return { ok: false, error: "The assistance request contains an unsupported field." };
 }
 
 function transcriptErrorResult(error, fallback) {
@@ -866,9 +1087,23 @@ if (!hasSingleInstanceLock) {
       // transcription application from starting.
       providerController = null;
     }
+    try {
+      createAssistBoundary();
+    } catch {
+      // Assistance, including its development fake, is optional and must not
+      // prevent local transcription from starting.
+      assistController = null;
+    }
     registerIpc();
     configureMediaCapture();
     createApplicationTray();
+    try {
+      globalShortcut.register("CommandOrControl+Shift+A", () => {
+        showMainWindow({ focusAssist: true });
+      });
+    } catch {
+      // The in-window control remains available when the OS reserves the key.
+    }
     desktopBootstrapReady = true;
     createWindow();
     app.on("activate", () => showMainWindow());
@@ -886,6 +1121,8 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
+    globalShortcut.unregister("CommandOrControl+Shift+A");
+    assistController?.cancel("session_reset");
     providerController?.cancelRequest();
     trayController?.destroy();
     trayController = null;

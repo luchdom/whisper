@@ -1,5 +1,12 @@
 import { CaptureController, CaptureStartCancelled, describeCaptureError } from "./capture-controller.js";
 import { deriveTrayState, SessionState } from "./lib/session-state.js";
+import {
+  AssistRequestAttempt,
+  AssistRequestCanceledError,
+  AssistRequestGate,
+  AssistStatusGenerationGate,
+  AssistTerminalDeliveryTimeoutError
+} from "./lib/assist-request-gate.js";
 import { SessionEventGate } from "./lib/session-event-gate.js";
 import { SerialTaskQueue } from "./lib/serial-task-queue.js";
 import { StartAttemptCancelled, StartAttemptGate } from "./lib/start-attempt.js";
@@ -40,6 +47,9 @@ const ENGINE_SETUP_STATES = Object.freeze([
   "resource_missing",
   "check_failed"
 ]);
+const ASSIST_QUESTION_MAX_CHARS = 1_000;
+const ASSIST_PROVIDER_LINK_IDS = new Set(["privacy", "data-controls", "usage"]);
+const ASSIST_CREDENTIAL_STATES = new Set(["absent", "configured", "invalid", "unreadable"]);
 const INITIAL_ENGINE_SETUP = Object.freeze({
   state: "checking",
   python: Object.freeze({ version: null, minimum: "3.12", supportedSeries: "3.12.x" }),
@@ -50,6 +60,8 @@ const INITIAL_ENGINE_SETUP = Object.freeze({
 const bridge = window.meeting;
 const state = new SessionState();
 const eventGate = new SessionEventGate();
+const assistEventGate = new AssistRequestGate();
+const assistStatusGate = new AssistStatusGenerationGate();
 const startGate = new StartAttemptGate();
 const autoSaveRefreshQueue = new SerialTaskQueue();
 const transcript = new TranscriptStore();
@@ -115,6 +127,47 @@ const elements = {
   providerDisclosureLinks: byId("provider-disclosure-links"),
   providerFeedback: byId("provider-feedback"),
   providerLockNote: byId("provider-lock-note"),
+  assistPanel: byId("assist-panel"),
+  assistStateBadge: byId("assist-state-badge"),
+  assistEmpty: byId("assist-empty"),
+  assistEmptyMessage: byId("assist-empty-message"),
+  assistCollapsed: byId("assist-collapsed"),
+  assistExpand: byId("expand-assist"),
+  assistDismissCollapsed: byId("dismiss-assist-collapsed"),
+  assistExpanded: byId("assist-expanded"),
+  assistContextSummary: byId("assist-context-summary"),
+  assistReviewContext: byId("review-assist-context"),
+  assistProviderAvailability: byId("assist-provider-availability"),
+  assistProviderMessage: byId("assist-provider-message"),
+  assistOpenSettings: byId("open-assist-settings"),
+  assistQuestion: byId("assist-question"),
+  assistQuestionCount: byId("assist-question-count"),
+  assistQuestionValidation: byId("assist-question-validation"),
+  assistConsent: byId("assist-consent"),
+  assistDisclosure: byId("assist-disclosure"),
+  assistPolicyVersion: byId("assist-policy-version"),
+  assistProviderLinks: byId("assist-provider-links"),
+  assistProgress: byId("assist-progress"),
+  assistMessage: byId("assist-message"),
+  assistResult: byId("assist-result"),
+  assistResultContext: byId("assist-result-context"),
+  assistResultState: byId("assist-result-state"),
+  assistStale: byId("assist-stale"),
+  assistUseLatestContext: byId("use-latest-assist-context"),
+  assistKeepAnswer: byId("keep-assist-answer"),
+  assistResultContent: byId("assist-result-content"),
+  assistCopySuggestion: byId("copy-assist-suggestion"),
+  assistResetRequest: byId("reset-assist-request"),
+  assistDismiss: byId("dismiss-assist"),
+  assistCancel: byId("cancel-assist"),
+  assistSend: byId("send-assist"),
+  assistContextDialog: byId("assist-context-dialog"),
+  assistContextDialogSummary: byId("assist-context-dialog-summary"),
+  assistContextList: byId("assist-context-list"),
+  assistContextDialogEmpty: byId("assist-context-dialog-empty"),
+  assistContextCloseTop: byId("close-assist-context-top"),
+  assistContextBack: byId("back-assist-context"),
+  assistContextUse: byId("use-assist-context"),
   trayLocationLabels: document.querySelectorAll("[data-tray-location]"),
   engineSetupCard: byId("engine-setup-card"),
   engineSetupTitle: byId("engine-setup-title"),
@@ -136,6 +189,20 @@ let settingsOperationPromise = Promise.resolve();
 let providerStatus = null;
 let providerStatusPromise = null;
 let providerBusy = false;
+let assistStatus = null;
+let assistStatusRequest = null;
+let assistStatusRefreshTimer = null;
+let assistExpanded = false;
+let assistDismissedSessionId = null;
+let assistConsentChecked = false;
+let assistConsentPromise = null;
+let assistRequestContext = null;
+let assistRequestPromise = null;
+let assistRequestAttempt = null;
+let assistDeliveryBlockedContext = null;
+let assistCancelPending = false;
+let assistOutput = null;
+let assistMessage = null;
 let setupCheckPromise = null;
 let setupActionBusy = false;
 let setupFeedback = null;
@@ -199,6 +266,22 @@ elements.providerModel.addEventListener("change", () => void persistProviderSett
 }));
 elements.importProviderCredential.addEventListener("click", () => void importProviderCredential());
 elements.revokeProviderCredential.addEventListener("click", () => void revokeProviderCredential());
+elements.assistExpand.addEventListener("click", () => void revealAssist({ focusQuestion: true }));
+elements.assistDismissCollapsed.addEventListener("click", dismissAssistForMeeting);
+elements.assistDismiss.addEventListener("click", dismissAssistForMeeting);
+elements.assistReviewContext.addEventListener("click", () => void openAssistContextReview());
+elements.assistOpenSettings.addEventListener("click", () => openSettings());
+elements.assistQuestion.addEventListener("input", handleAssistQuestionInput);
+elements.assistConsent.addEventListener("change", () => void handleAssistConsentChange());
+elements.assistSend.addEventListener("click", () => void sendAssistRequest());
+elements.assistCancel.addEventListener("click", () => void cancelAssistRequest());
+elements.assistUseLatestContext.addEventListener("click", () => void useLatestAssistContext());
+elements.assistKeepAnswer.addEventListener("click", keepAssistAnswer);
+elements.assistCopySuggestion.addEventListener("click", () => void copyAssistSuggestion());
+elements.assistResetRequest.addEventListener("click", resetAssistRequest);
+elements.assistContextCloseTop.addEventListener("click", closeAssistContextReview);
+elements.assistContextBack.addEventListener("click", closeAssistContextReview);
+elements.assistContextUse.addEventListener("click", useReviewedAssistContext);
 elements.settingsButton.addEventListener("click", () => openSettings());
 elements.settingsCloseTop.addEventListener("click", closeSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
@@ -208,8 +291,20 @@ elements.openPythonDownload.addEventListener("click", () => void openPythonDownl
 elements.copySetupCommand.addEventListener("click", () => void copySetupCommand());
 elements.checkEngineSetup.addEventListener("click", () => void checkEngineSetup());
 elements.settingsDialog.addEventListener("close", () => elements.settingsButton.focus());
+elements.assistContextDialog.addEventListener("close", () => {
+  if (assistExpanded && !elements.assistReviewContext.disabled) elements.assistReviewContext.focus();
+});
 document.addEventListener("keydown", (event) => {
-  if (event.ctrlKey && event.key === "Enter" && !elements.action.disabled && !elements.settingsDialog.open) {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && event.target === elements.assistQuestion) {
+    event.preventDefault();
+    if (canSendAssistRequest()) void sendAssistRequest();
+    return;
+  }
+  if (event.ctrlKey
+    && event.key === "Enter"
+    && !isEditableShortcutTarget(event.target)
+    && !event.target?.closest?.("dialog")
+    && !elements.action.disabled) {
     event.preventDefault();
     elements.action.click();
   }
@@ -217,12 +312,15 @@ document.addEventListener("keydown", (event) => {
 
 bridge.onBackendEvent(handleBackendEvent);
 bridge.onTrayAction((action) => void handleTrayAction(action));
+bridge.onAssistEvent(handleAssistEvent);
+bridge.onAssistShortcut(() => void revealAssist({ focusQuestion: true }));
 bridge.onBeforeClose(() => {
   void stopForClose().finally(() => bridge.notifyCloseReady());
 });
 
 renderSession();
 renderTranscript();
+renderAssist();
 void initialize();
 
 async function initialize() {
@@ -260,6 +358,7 @@ async function initialize() {
   }
   settingsReady = true;
   renderSession();
+  void refreshAssistStatus();
 }
 
 function applyPlatform(platform) {
@@ -306,6 +405,7 @@ async function startSession(generation) {
   const previousTranscript = transcript.snapshot();
   const previousTranslationRuntimeState = translationRuntimeState;
   let transcriptReplaced = false;
+  let assistSessionId = null;
   hideAlert();
   hideTranslationWarning();
   setTranslationRuntimeState(settings.translation === "en_to_pt_br" ? "on" : "off");
@@ -327,7 +427,9 @@ async function startSession(generation) {
     if (!startResult?.ok) throw new MeetingUiError("model_unavailable", startResult?.error);
     backendSessionStarted = true;
     autoSaveCreated = false;
-    eventGate.activate(startResult.engine?.session_id);
+    assistSessionId = startResult.engine?.session_id;
+    eventGate.activate(assistSessionId);
+    beginAssistMeeting(assistSessionId);
     transcript.reset();
     announcedFinalIds.clear();
     transcriptReplaced = true;
@@ -344,6 +446,7 @@ async function startSession(generation) {
     backendSessionStarted = false;
     eventGate.clear();
     hideModelProgress();
+    if (assistSessionId) endAssistMeeting(assistSessionId);
     if (transcriptReplaced) {
       transcript.restore(previousTranscript);
       announcedFinalIds.clear();
@@ -427,6 +530,7 @@ async function performStop() {
     }));
   }
   eventGate.clear();
+  if (assistEventGate.sessionId) endAssistMeeting(assistEventGate.sessionId);
 
   state.finishStop();
   const issue = pendingStopFailure ?? (stopError ? describeStartError(stopError) : null);
@@ -442,6 +546,7 @@ async function performStop() {
     );
   }
   renderSession();
+  void refreshAssistStatus();
 }
 
 async function interruptSession(track, error) {
@@ -559,6 +664,7 @@ function handleBackendEvent(event) {
         announcedFinalIds.add(event.segment.id);
         announceFinalSegment(event.segment);
       }
+      if (event.type === "final_segment") scheduleAssistStatusRefresh();
     }
     return;
   }
@@ -640,6 +746,7 @@ function renderSession() {
     catalogReady: Boolean(modelCatalog)
   }));
   renderSettingsAvailability();
+  renderAssist();
 }
 
 function renderSettingsAvailability() {
@@ -650,7 +757,7 @@ function renderSettingsAvailability() {
   elements.model.disabled = locked || !settingsReady || !modelCatalog;
   elements.language.disabled = locked || englishOnly || !settingsReady || !modelCatalog;
   elements.languageHelp.hidden = !englishOnly;
-  elements.settingsButton.disabled = state.active || !settingsReady;
+  elements.settingsButton.disabled = !settingsReady;
   elements.diarization.disabled = locked;
   elements.translation.disabled = locked || !translationAvailable;
   elements.translationAvailability.hidden = translationAvailable;
@@ -743,6 +850,7 @@ function createSegmentNode(id) {
   const article = document.createElement("article");
   article.className = "transcript-segment";
   article.dataset.segmentId = id;
+  article.tabIndex = -1;
   const meta = document.createElement("div");
   meta.className = "segment-meta";
   const label = document.createElement("span");
@@ -946,7 +1054,7 @@ async function saveFinalTranscriptAutomatically() {
 }
 
 function openSettings() {
-  if (state.active || elements.settingsDialog.open) return;
+  if (elements.settingsDialog.open) return;
   elements.settingsDialog.showModal();
   void refreshProviderStatus();
   queueMicrotask(() => {
@@ -1362,6 +1470,912 @@ function clearProviderFeedback() {
   elements.providerFeedback.dataset.tone = "";
   elements.providerFeedback.setAttribute("role", "status");
   elements.providerFeedback.setAttribute("aria-live", "polite");
+}
+
+function beginAssistMeeting(sessionId) {
+  supersedeAssistRequestForMeetingTransition();
+  if (assistStatusRefreshTimer) clearTimeout(assistStatusRefreshTimer);
+  assistStatusRefreshTimer = null;
+  assistStatusGate.transition(sessionId);
+  assistEventGate.activateSession(sessionId, 0);
+  assistStatus = null;
+  assistExpanded = false;
+  assistDismissedSessionId = null;
+  assistConsentChecked = false;
+  assistRequestContext = null;
+  assistOutput = null;
+  assistMessage = null;
+  assistDeliveryBlockedContext = null;
+  renderAssist();
+  void refreshAssistStatus();
+}
+
+function endAssistMeeting(sessionId) {
+  if (assistEventGate.sessionId !== sessionId) return false;
+  supersedeAssistRequestForMeetingTransition();
+  if (assistStatusRefreshTimer) clearTimeout(assistStatusRefreshTimer);
+  assistStatusRefreshTimer = null;
+  assistStatusGate.transition(null);
+  assistEventGate.endSession(sessionId);
+  assistStatus = null;
+  assistExpanded = false;
+  assistConsentChecked = false;
+  assistRequestContext = null;
+  assistOutput = null;
+  assistMessage = null;
+  assistDeliveryBlockedContext = null;
+  renderAssist();
+  return true;
+}
+
+function supersedeAssistRequestForMeetingTransition() {
+  assistRequestAttempt?.supersede();
+}
+
+function refreshAssistStatus({ fresh = false } = {}) {
+  if (fresh) assistStatusGate.invalidate();
+  const identity = assistStatusGate.capture();
+  if (assistStatusRequest && assistStatusGate.isCurrent(assistStatusRequest.identity)) {
+    return assistStatusRequest.promise;
+  }
+  const request = { identity, promise: null };
+  const operation = (async () => {
+    try {
+      const result = await bridge.getAssistStatus();
+      if (!result?.ok) throw new Error(result?.error || "Meeting assistance status could not be checked.");
+      if (!assistStatusGate.accepts(identity, result.assist?.sessionId)) return false;
+      return applyAssistStatus(result.assist, { expectedSessionId: identity.sessionId });
+    } catch (error) {
+      if (!assistStatusGate.isCurrent(identity)) return false;
+      assistStatus = null;
+      setAssistMessage(
+        error?.message || "Meeting assistance status could not be checked. Local transcription continues normally.",
+        "error"
+      );
+      return false;
+    }
+  })();
+  request.promise = operation.finally(() => {
+    if (assistStatusRequest === request) {
+      assistStatusRequest = null;
+      renderAssist();
+    }
+  });
+  assistStatusRequest = request;
+  renderAssist();
+  return request.promise;
+}
+
+function scheduleAssistStatusRefresh() {
+  // Invalidate immediately so a response already in transit cannot swallow
+  // this finalized transcript revision when the debounce timer fires.
+  assistStatusGate.invalidate();
+  if (assistStatusRefreshTimer) clearTimeout(assistStatusRefreshTimer);
+  assistStatusRefreshTimer = setTimeout(() => {
+    assistStatusRefreshTimer = null;
+    void refreshAssistStatus();
+  }, 180);
+}
+
+function applyAssistStatus(value, { expectedSessionId = assistStatusGate.sessionId } = {}) {
+  const next = sanitizeAssistStatus(value);
+  if (next.sessionId !== expectedSessionId || next.sessionId !== assistEventGate.sessionId) return false;
+  if (next.sessionId !== null && next.contextRevision < assistEventGate.transcriptRevision) return false;
+  assistStatus = next;
+  if (assistDeliveryBlockedContext
+    && (assistDeliveryBlockedContext.sessionId !== next.sessionId
+      || assistDeliveryBlockedContext.contextRevision !== next.contextRevision)) {
+    assistDeliveryBlockedContext = null;
+  }
+
+  // Lifecycle transitions own gate activation/teardown. Status can advance
+  // only the exact already-current meeting identity.
+  if (next.sessionId !== null) assistEventGate.advanceTranscript(next.contextRevision);
+
+  assistConsentChecked = next.provider.consentGranted === true;
+
+  if (assistOutput
+    && assistOutput.sessionId === next.sessionId
+    && next.contextRevision > assistOutput.contextRevision) {
+    assistOutput.stale = true;
+  }
+  return true;
+}
+
+function sanitizeAssistStatus(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Meeting assistance status could not be checked.");
+  }
+  const sessionId = value.sessionId === null ? null : normalizeAssistIdentifier(value.sessionId, "session");
+  const contextRevision = normalizeAssistRevision(value.contextRevision);
+  const contextSummary = sanitizeAssistContextSummary(value.contextSummary);
+  if (sessionId === null && (contextSummary !== null || contextRevision !== 0)) {
+    throw new Error("Meeting assistance status could not be checked.");
+  }
+  const provider = sanitizeAssistProvider(value.provider);
+  return Object.freeze({ sessionId, contextRevision, contextSummary, provider });
+}
+
+function sanitizeAssistContextSummary(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Meeting assistance context could not be checked.");
+  }
+  const segmentCount = normalizeAssistRevision(value.segmentCount);
+  const transcriptChars = normalizeAssistRevision(value.transcriptChars);
+  const startMs = normalizeAssistRevision(value.startMs);
+  const endMs = normalizeAssistRevision(value.endMs);
+  if (segmentCount === 0 || endMs < startMs) {
+    throw new Error("Meeting assistance context could not be checked.");
+  }
+  return Object.freeze({ segmentCount, transcriptChars, startMs, endMs });
+}
+
+function sanitizeAssistProvider(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Meeting assistance provider status could not be checked.");
+  }
+  if (!["off", "openai"].includes(value.mode)
+    || typeof value.model !== "string"
+    || !ASSIST_CREDENTIAL_STATES.has(value.credentialState)
+    || typeof value.configured !== "boolean"
+    || typeof value.removable !== "boolean"
+    || typeof value.encryptionAvailable !== "boolean"
+    || typeof value.consentGranted !== "boolean"
+    || typeof value.inFlight !== "boolean") {
+    throw new Error("Meeting assistance provider status could not be checked.");
+  }
+  return Object.freeze({
+    mode: value.mode,
+    model: value.model,
+    configured: value.configured,
+    credentialState: value.credentialState,
+    removable: value.removable,
+    encryptionAvailable: value.encryptionAvailable,
+    consentGranted: value.consentGranted,
+    inFlight: value.inFlight,
+    disclosure: sanitizeAssistDisclosure(value.disclosure)
+  });
+}
+
+function sanitizeAssistDisclosure(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.title !== "string"
+    || typeof value.summary !== "string"
+    || typeof value.version !== "string") {
+    throw new Error("Meeting assistance disclosure could not be checked.");
+  }
+  const links = Array.isArray(value.links)
+    ? value.links.filter((link) => (
+      link
+      && ASSIST_PROVIDER_LINK_IDS.has(link.id)
+      && typeof link.label === "string"
+    )).map((link) => Object.freeze({ id: link.id, label: link.label }))
+    : [];
+  return Object.freeze({
+    title: value.title,
+    summary: value.summary,
+    version: value.version,
+    links: Object.freeze(links)
+  });
+}
+
+function renderAssist() {
+  const sessionId = assistStatus?.sessionId ?? assistEventGate.sessionId;
+  const contextSummary = assistStatus?.contextSummary ?? null;
+  const hasContext = Boolean(sessionId && contextSummary?.segmentCount > 0);
+  const dismissed = Boolean(sessionId && assistDismissedSessionId === sessionId);
+  const inFlight = Boolean(assistRequestPromise || assistOutput?.phase === "streaming" || assistStatus?.provider.inFlight);
+  const provider = assistStatus?.provider ?? null;
+  const disclosure = provider?.disclosure ?? null;
+
+  elements.assistPanel.hidden = dismissed;
+  if (dismissed) return;
+
+  elements.assistEmpty.hidden = hasContext;
+  elements.assistEmptyMessage.textContent = sessionId
+    ? "Waiting for finalized transcript text before meeting assistance can be used."
+    : "Start transcription to use meeting assistance.";
+  elements.assistCollapsed.hidden = !hasContext || assistExpanded;
+  elements.assistExpanded.hidden = !assistExpanded;
+  elements.assistExpand.setAttribute("aria-expanded", String(assistExpanded));
+
+  elements.assistContextSummary.textContent = contextSummary
+    ? formatAssistContextSummary(contextSummary)
+    : "No finalized context is available yet.";
+  elements.assistReviewContext.disabled = !hasContext || inFlight;
+  elements.assistQuestion.disabled = !hasContext || inFlight || Boolean(assistOutput);
+  elements.assistConsent.disabled = !hasContext
+    || inFlight
+    || Boolean(assistConsentPromise)
+    || !providerCanAssist(provider);
+  elements.assistConsent.checked = assistConsentChecked;
+  elements.assistSend.disabled = !canSendAssistRequest();
+  elements.assistSend.hidden = Boolean(assistOutput);
+  elements.assistCancel.hidden = !inFlight;
+  elements.assistCancel.disabled = assistCancelPending
+    || Boolean(assistRequestAttempt?.canceled && !assistRequestAttempt.dispatched);
+  elements.assistDismiss.hidden = inFlight;
+  elements.assistProgress.hidden = !inFlight;
+
+  renderAssistStateBadge(provider, hasContext, inFlight);
+  renderAssistProviderAvailability(provider);
+  renderAssistDisclosure(disclosure);
+  renderAssistMessage();
+  renderAssistResult();
+}
+
+function renderAssistStateBadge(provider, hasContext, inFlight) {
+  let display = null;
+  if (inFlight) display = ["Working", "working"];
+  else if (providerCanAssist(provider) && hasContext) display = ["Ready", "ready"];
+  else if (provider?.mode === "off") display = ["Off", "neutral"];
+  elements.assistStateBadge.hidden = !display;
+  elements.assistStateBadge.textContent = display?.[0] ?? "";
+  elements.assistStateBadge.dataset.state = display?.[1] ?? "";
+}
+
+function renderAssistProviderAvailability(provider) {
+  const message = describeAssistProviderAvailability(provider);
+  elements.assistProviderAvailability.hidden = !message;
+  elements.assistProviderMessage.textContent = message ?? "";
+  elements.assistOpenSettings.disabled = !settingsReady;
+}
+
+function describeAssistProviderAvailability(provider) {
+  if (!provider) return "Meeting assistance status is unavailable. Open Settings to review the provider.";
+  if (provider.mode !== "openai") return "AI assistance is Off. Open Settings to choose OpenAI before sending anything.";
+  if (!provider.encryptionAvailable) return "Secure credential storage is unavailable on this device.";
+  if (["invalid", "unreadable"].includes(provider.credentialState)) {
+    return "The saved OpenAI API key needs to be removed in Settings before assistance can be used.";
+  }
+  if (!provider.configured) return "No OpenAI API key is saved. Open Settings to import one securely.";
+  return null;
+}
+
+function renderAssistDisclosure(disclosure) {
+  elements.assistDisclosure.textContent = disclosure?.summary ?? "Provider disclosure is unavailable.";
+  elements.assistPolicyVersion.textContent = disclosure?.version
+    ? `Assistant policy ${disclosure.version} applies to this meeting.`
+    : "";
+  elements.assistProviderLinks.replaceChildren(...(disclosure?.links ?? []).map((link) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "provider-link-button";
+    button.textContent = link.label;
+    button.addEventListener("click", () => void openProviderLink(link.id));
+    return button;
+  }));
+}
+
+function handleAssistQuestionInput() {
+  const length = elements.assistQuestion.value.length;
+  elements.assistQuestionCount.textContent = `${length.toLocaleString()} / ${ASSIST_QUESTION_MAX_CHARS.toLocaleString()}`;
+  elements.assistQuestionCount.hidden = length < 800;
+  validateAssistQuestion({ announce: false });
+  renderAssist();
+}
+
+async function handleAssistConsentChange() {
+  if (assistConsentPromise) return;
+  const previous = assistConsentChecked;
+  const desired = elements.assistConsent.checked;
+  const identity = assistStatusGate.invalidate();
+  assistConsentChecked = desired;
+  renderAssist();
+  const operation = (async () => {
+    const result = await bridge.setAssistConsent(desired);
+    if (!result?.ok) throw new Error(result?.error || "Meeting assistance consent could not be updated.");
+    if (!assistStatusGate.isCurrent(identity)) return false;
+    if (!assistStatusGate.accepts(identity, result.assist?.sessionId)) {
+      void refreshAssistStatus({ fresh: true });
+      return false;
+    }
+    if (!applyAssistStatus(result.assist, { expectedSessionId: identity.sessionId })) return false;
+    assistConsentChecked = result.assist?.provider?.consentGranted === true;
+    return true;
+  })();
+  assistConsentPromise = operation;
+  try {
+    const applied = await operation;
+    if (applied && assistStatusGate.isCurrent(identity)) assistMessage = null;
+  } catch (error) {
+    if (assistStatusGate.isCurrent(identity)) {
+      assistConsentChecked = previous;
+      setAssistMessage(
+        `${error?.message || "Meeting assistance consent could not be updated."} Nothing was sent.`,
+        "error"
+      );
+    }
+  } finally {
+    assistConsentPromise = null;
+    renderAssist();
+  }
+}
+
+function validateAssistQuestion({ announce = true } = {}) {
+  const value = elements.assistQuestion.value;
+  let message = null;
+  if (value.trim().length === 0) message = "Enter a question before sending.";
+  else if (value.length > ASSIST_QUESTION_MAX_CHARS) message = "Keep the question within 1,000 characters.";
+  else if (/\u0000|[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+    message = "Remove unsupported control characters from the question.";
+  }
+  elements.assistQuestionValidation.hidden = !message || !announce;
+  elements.assistQuestionValidation.textContent = announce ? message ?? "" : "";
+  elements.assistQuestion.setAttribute("aria-invalid", String(Boolean(message && announce)));
+  return message === null ? value.trim() : null;
+}
+
+function providerCanAssist(provider = assistStatus?.provider) {
+  return Boolean(provider
+    && provider.mode === "openai"
+    && provider.configured
+    && provider.credentialState === "configured"
+    && provider.encryptionAvailable);
+}
+
+function canSendAssistRequest({ currentAttempt = null } = {}) {
+  const question = elements.assistQuestion.value;
+  const ownsCurrentAttempt = Boolean(currentAttempt && assistRequestAttempt === currentAttempt);
+  const deliveryBlocked = Boolean(assistDeliveryBlockedContext
+    && assistDeliveryBlockedContext.sessionId === assistStatus?.sessionId
+    && assistDeliveryBlockedContext.contextRevision === assistStatus?.contextRevision);
+  return Boolean(
+    assistStatus?.sessionId
+    && assistStatus.contextSummary?.segmentCount > 0
+    && providerCanAssist()
+    && assistStatus.provider.disclosure?.version
+    && assistStatus.provider.consentGranted
+    && assistConsentChecked
+    && question.trim().length > 0
+    && question.length <= ASSIST_QUESTION_MAX_CHARS
+    && !/\u0000|[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(question)
+    && (!assistRequestPromise || ownsCurrentAttempt)
+    && !assistConsentPromise
+    && !assistCancelPending
+    && assistOutput?.phase !== "streaming"
+    && !assistStatus.provider.inFlight
+    && !deliveryBlocked
+    && !assistOutput
+  );
+}
+
+async function revealAssist({ focusQuestion = false } = {}) {
+  if (assistStatus?.sessionId && assistDismissedSessionId === assistStatus.sessionId) {
+    assistDismissedSessionId = null;
+  }
+  await refreshAssistStatus();
+  if (assistStatus?.contextSummary?.segmentCount > 0) assistExpanded = true;
+  renderAssist();
+  if (focusQuestion && assistExpanded && !elements.assistQuestion.disabled) {
+    requestAnimationFrame(() => {
+      elements.assistPanel.scrollIntoView({ block: "nearest" });
+      elements.assistQuestion.focus();
+    });
+  } else if (focusQuestion) {
+    elements.assistPanel.tabIndex = -1;
+    elements.assistPanel.focus();
+  }
+}
+
+function dismissAssistForMeeting() {
+  if (assistRequestPromise || assistOutput?.phase === "streaming") return;
+  const sessionId = assistStatus?.sessionId ?? assistEventGate.sessionId;
+  if (sessionId) assistDismissedSessionId = sessionId;
+  else assistExpanded = false;
+  renderAssist();
+}
+
+async function openAssistContextReview() {
+  if (!assistStatus?.sessionId || elements.assistContextDialog.open) return;
+  try {
+    const context = await getExactAssistContext();
+    renderAssistContextDialog(context);
+    elements.assistContextDialog.showModal();
+  } catch (error) {
+    setAssistMessage(
+      error?.message || "The finalized context could not be reviewed. Local transcription continues normally.",
+      "error"
+    );
+    renderAssist();
+  }
+}
+
+function closeAssistContextReview() {
+  if (elements.assistContextDialog.open) elements.assistContextDialog.close();
+}
+
+function useReviewedAssistContext() {
+  closeAssistContextReview();
+  renderAssist();
+  requestAnimationFrame(() => elements.assistQuestion.focus());
+}
+
+async function getExactAssistContext() {
+  const result = await bridge.getAssistContext();
+  if (!result?.ok) throw new Error(result?.error || "The finalized assistance context could not be loaded.");
+  const context = sanitizeAssistContext(result.context);
+  if (!context || context.sessionId !== assistStatus?.sessionId) {
+    throw new Error("The finalized assistance context changed. Try sending again.");
+  }
+  if (context.sessionId !== assistEventGate.sessionId) {
+    assistEventGate.activateSession(context.sessionId, context.revision);
+  } else if (!assistEventGate.advanceTranscript(context.revision)) {
+    throw new Error("The finalized assistance context is stale. Try sending again.");
+  }
+  return context;
+}
+
+function sanitizeAssistContext(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("The finalized assistance context could not be loaded.");
+  }
+  const sessionId = normalizeAssistIdentifier(value.sessionId, "session");
+  const revision = normalizeAssistRevision(value.revision);
+  const transcriptChars = normalizeAssistRevision(value.transcriptChars);
+  if (!Array.isArray(value.segments) || value.segments.length > 48 || transcriptChars > 12_000) {
+    throw new Error("The finalized assistance context could not be loaded.");
+  }
+  const segments = value.segments.map((segment) => sanitizeAssistContextSegment(segment));
+  const ids = new Set();
+  let measuredChars = 0;
+  let previous = null;
+  for (const segment of segments) {
+    if (ids.has(segment.id)
+      || (previous && compareAssistContextSegments(previous, segment) > 0)) {
+      throw new Error("The finalized assistance context could not be loaded.");
+    }
+    ids.add(segment.id);
+    measuredChars += segment.text.length;
+    previous = segment;
+  }
+  if (measuredChars !== transcriptChars) {
+    throw new Error("The finalized assistance context could not be loaded.");
+  }
+  return Object.freeze({
+    sessionId,
+    revision,
+    transcriptChars,
+    segments: Object.freeze(segments)
+  });
+}
+
+function sanitizeAssistContextSegment(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.text !== "string"
+    || value.text.trim().length === 0
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value.text)
+    || !["system", "microphone"].includes(value.track)) {
+    throw new Error("The finalized assistance context could not be loaded.");
+  }
+  const startMs = normalizeAssistRevision(value.start_ms);
+  const endMs = normalizeAssistRevision(value.end_ms);
+  if (endMs < startMs) throw new Error("The finalized assistance context could not be loaded.");
+  const speakerId = typeof value.speaker_id === "string" ? value.speaker_id : null;
+  if (speakerId !== null
+    && (speakerId.length > 256 || /[\u0000-\u001f\u007f]/u.test(speakerId))) {
+    throw new Error("The finalized assistance context could not be loaded.");
+  }
+  return Object.freeze({
+    id: normalizeAssistIdentifier(value.id, "segment"),
+    revision: normalizeAssistRevision(value.revision),
+    start_ms: startMs,
+    end_ms: endMs,
+    track: value.track,
+    text: value.text,
+    language: typeof value.language === "string" ? value.language : null,
+    speaker_id: speakerId
+  });
+}
+
+function compareAssistContextSegments(left, right) {
+  return left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.id.localeCompare(right.id);
+}
+
+function renderAssistContextDialog(context) {
+  const summary = summarizeAssistContextSnapshot(context);
+  elements.assistContextDialogSummary.textContent = summary
+    ? formatAssistContextSummary(summary)
+    : "No finalized transcript context is available.";
+  elements.assistContextDialogEmpty.hidden = context.segments.length > 0;
+  elements.assistContextUse.disabled = context.segments.length === 0;
+  elements.assistContextList.replaceChildren(...context.segments.map((segment) => {
+    const item = document.createElement("li");
+    const meta = document.createElement("span");
+    meta.className = "assist-context-segment-meta";
+    meta.textContent = `${formatTimestamp(segment.start_ms)}–${formatTimestamp(segment.end_ms)} · ${formatAssistSnapshotSpeaker(segment)}`;
+    const text = document.createElement("p");
+    text.className = "assist-context-segment-text";
+    text.textContent = segment.text;
+    setLanguageAttribute(text, segment.language);
+    item.append(meta, text);
+    return item;
+  }));
+}
+
+async function sendAssistRequest() {
+  const question = validateAssistQuestion({ announce: true });
+  if (!question || assistRequestPromise || assistOutput) return;
+  const attempt = new AssistRequestAttempt();
+  const meetingIdentity = assistStatusGate.capture();
+  assistRequestAttempt = attempt;
+  assistMessage = null;
+  assistRequestPromise = (async () => {
+    await refreshAssistStatus({ fresh: true });
+    attempt.throwIfCanceledBeforeDispatch();
+    if (!canSendAssistRequest({ currentAttempt: attempt })) {
+      throw new Error(describeAssistSendBlocker());
+    }
+
+    // Review is inspect-only. Every explicit Send freezes a fresh, exact,
+    // one-use pack in the main process immediately before the request.
+    const context = await getExactAssistContext();
+    attempt.throwIfCanceledBeforeDispatch();
+    if (context.segments.length === 0) throw new Error("Wait for finalized transcript text before sending a question.");
+    if (!attempt.bindContext(context.sessionId, context.revision)) {
+      throw new Error("The meeting assistance request could not be prepared.");
+    }
+    assistRequestContext = context;
+    const pending = assistEventGate.beginRequest(context.revision);
+    if (!pending || pending.sessionId !== assistStatus.sessionId || pending.minimumContextRevision !== context.revision) {
+      throw new Error("The meeting context changed. Try sending again.");
+    }
+
+    assistOutput = createPendingAssistOutput(context);
+    renderAssist();
+    // This final synchronous check and dispatch mark close the preflight
+    // cancellation window before any provider request can be transmitted.
+    attempt.throwIfCanceledBeforeDispatch();
+    if (!attempt.markDispatched()) {
+      throw new Error("The meeting assistance request could not be dispatched.");
+    }
+    const result = await bridge.requestAssist({ question });
+    if (!result?.ok) throw new Error(result?.error || "Assistance could not be completed.");
+    // The invoke reply and streamed webContents events use separate Electron
+    // channels. Wait for the strictly gated terminal event instead of assuming
+    // cross-channel delivery order.
+    await attempt.waitForTerminal();
+  })();
+  renderAssist();
+
+  try {
+    await assistRequestPromise;
+  } catch (error) {
+    const ownsCurrentMeeting = assistRequestAttempt === attempt
+      && assistStatusGate.isSameSession(meetingIdentity);
+    if (!ownsCurrentMeeting) return;
+    if (error instanceof AssistRequestCanceledError) {
+      if (assistOutput?.phase === "pending") assistOutput.phase = "canceled";
+      setAssistMessage(error.message, "warning");
+    } else if (error instanceof AssistTerminalDeliveryTimeoutError) {
+      if (assistOutput) assistOutput.phase = "error";
+      assistDeliveryBlockedContext = attempt.context;
+      setAssistMessage(
+        `${error.message} Wait for new finalized transcript text or restart the meeting before trying again. Local transcription continues normally.`,
+        "error"
+      );
+    } else if (!assistOutput || !["error", "canceled"].includes(assistOutput.phase)) {
+      if (assistOutput) assistOutput.phase = "error";
+      setAssistMessage(
+        `${error?.message || "Assistance could not be completed."} Local transcription continues normally.`,
+        "error"
+      );
+    }
+  } finally {
+    const ownsAttempt = assistRequestAttempt === attempt;
+    attempt.finish();
+    if (ownsAttempt) {
+      assistRequestAttempt = null;
+      assistRequestPromise = null;
+      if (assistStatusGate.isSameSession(meetingIdentity)) {
+        await refreshAssistStatus({ fresh: true });
+      }
+      renderAssist();
+    }
+  }
+}
+
+function createPendingAssistOutput(context) {
+  return {
+    requestId: null,
+    sessionId: context.sessionId,
+    contextRevision: context.revision,
+    contextSnapshot: context,
+    snapshotVerified: false,
+    phase: "pending",
+    suggestion: "",
+    citations: [],
+    stale: false,
+    staleAcknowledged: false,
+    metrics: null
+  };
+}
+
+function handleAssistEvent(event) {
+  const attempt = assistRequestAttempt;
+  if (!attempt || attempt.closed) return;
+  if (!assistEventGate.accepts(event)) return;
+
+  if (event.type === "assist_started") {
+    if (!attempt.bindStarted(event)) return;
+    const context = assistRequestContext?.sessionId === event.sessionId
+      && assistRequestContext.revision === event.contextRevision
+      ? assistRequestContext
+      : null;
+    assistOutput = {
+      requestId: event.requestId,
+      sessionId: event.sessionId,
+      contextRevision: event.contextRevision,
+      contextSnapshot: context,
+      snapshotVerified: Boolean(context),
+      phase: "streaming",
+      suggestion: "",
+      citations: [],
+      stale: assistStatus?.sessionId === event.sessionId
+        && assistStatus.contextRevision > event.contextRevision,
+      staleAcknowledged: false,
+      metrics: null
+    };
+    assistExpanded = true;
+    assistDismissedSessionId = null;
+    assistMessage = null;
+    renderAssist();
+    return;
+  }
+
+  if (!assistOutput || event.requestId !== assistOutput.requestId) return;
+  const terminal = ["assist_completed", "assist_error", "assist_canceled"].includes(event.type);
+  if (terminal && !attempt.acceptTerminal(event)) return;
+  if (event.type === "assist_delta") {
+    // v0.4 intentionally presents all streamed model text as an unverified
+    // suggestion. It does not promote provider-generated classifications to
+    // meeting facts.
+    if (event.channel === "suggestion") assistOutput.suggestion += event.delta;
+  } else if (event.type === "assist_item") {
+    if (event.channel === "suggestion") {
+      assistOutput.suggestion = appendAssistSuggestion(assistOutput.suggestion, event.text);
+      if (assistOutput.snapshotVerified) {
+        const allowedIds = new Set(assistOutput.contextSnapshot.segments.map((segment) => segment.id));
+        if (event.citations.every((id) => allowedIds.has(id))) {
+          assistOutput.citations = [...new Set([...assistOutput.citations, ...event.citations])];
+        }
+      }
+    }
+  } else if (event.type === "assist_completed") {
+    assistOutput.phase = "completed";
+    assistOutput.metrics = event.metrics;
+    if (!assistOutput.suggestion.trim()) {
+      setAssistMessage("The provider completed without a displayable suggestion. Local transcription continues normally.", "warning");
+    }
+  } else if (event.type === "assist_error") {
+    assistOutput.phase = "error";
+    setAssistMessage(`${event.error.message} Local transcription continues normally.`, "error");
+  } else if (event.type === "assist_canceled") {
+    assistOutput.phase = "canceled";
+    setAssistMessage("Assistance canceled. Your transcript was not changed.", "warning");
+  }
+  renderAssist();
+}
+
+async function cancelAssistRequest() {
+  if (assistCancelPending || (!assistRequestPromise && assistOutput?.phase !== "streaming")) return;
+  const attempt = assistRequestAttempt;
+  if (attempt?.cancel()) {
+    if (assistOutput?.phase === "pending") assistOutput.phase = "canceled";
+    setAssistMessage("Assistance canceled before any meeting context was sent.", "warning");
+    renderAssist();
+    return;
+  }
+  assistCancelPending = true;
+  renderAssist();
+  try {
+    const result = await bridge.cancelAssist();
+    if (!result?.ok) throw new Error(result?.error || "The assistance request could not be canceled.");
+  } catch (error) {
+    setAssistMessage(
+      `${error?.message || "The assistance request could not be canceled."} Local transcription continues normally.`,
+      "error"
+    );
+  } finally {
+    assistCancelPending = false;
+    renderAssist();
+  }
+}
+
+function renderAssistMessage() {
+  elements.assistMessage.hidden = !assistMessage;
+  elements.assistMessage.textContent = assistMessage?.text ?? "";
+  elements.assistMessage.dataset.tone = assistMessage?.tone ?? "";
+  elements.assistMessage.setAttribute("role", assistMessage?.tone === "error" ? "alert" : "status");
+  elements.assistMessage.setAttribute("aria-live", assistMessage?.tone === "error" ? "assertive" : "polite");
+}
+
+function setAssistMessage(text, tone = "status") {
+  assistMessage = { text, tone };
+}
+
+function renderAssistResult() {
+  elements.assistResult.hidden = !assistOutput;
+  if (!assistOutput) {
+    elements.assistResultContent.replaceChildren();
+    return;
+  }
+
+  const summary = assistOutput.contextSnapshot
+    ? summarizeAssistContextSnapshot(assistOutput.contextSnapshot)
+    : null;
+  elements.assistResultContext.textContent = summary
+    ? `Frozen context · ${formatAssistContextSummary(summary)}`
+    : `Frozen context revision ${assistOutput.contextRevision}`;
+  const resultState = {
+    pending: ["Preparing", "working"],
+    streaming: ["Streaming", "working"],
+    completed: ["Complete", "complete"],
+    canceled: ["Incomplete", "incomplete"],
+    error: ["Incomplete", "error"]
+  }[assistOutput.phase];
+  elements.assistResultState.textContent = resultState?.[0] ?? "";
+  elements.assistResultState.dataset.state = resultState?.[1] ?? "";
+
+  const suggestion = assistOutput.suggestion.trim();
+  const content = [];
+  if (suggestion) {
+    const channel = document.createElement("section");
+    channel.className = "assist-channel";
+    channel.dataset.channel = "suggestion";
+    const title = document.createElement("h4");
+    title.className = "assist-channel-title";
+    title.textContent = "Suggested response";
+    const text = document.createElement("p");
+    text.className = "assist-channel-text";
+    text.textContent = suggestion;
+    channel.append(title, text);
+    const citations = renderAssistCitations(assistOutput);
+    if (citations) channel.append(citations);
+    content.push(channel);
+  }
+  elements.assistResultContent.replaceChildren(...content);
+  elements.assistCopySuggestion.hidden = !suggestion;
+  elements.assistResetRequest.hidden = ["pending", "streaming"].includes(assistOutput.phase);
+  elements.assistResetRequest.textContent = assistOutput.phase === "error" ? "Try again" : "Ask another question";
+  elements.assistStale.hidden = !assistOutput.stale || assistOutput.staleAcknowledged;
+}
+
+function renderAssistCitations(output) {
+  if (!output.snapshotVerified || output.citations.length === 0) return null;
+  const segmentById = new Map(output.contextSnapshot.segments.map((segment) => [segment.id, segment]));
+  const container = document.createElement("div");
+  container.className = "assist-citations";
+  container.setAttribute("aria-label", "Supporting finalized transcript citations");
+  for (const id of output.citations) {
+    const segment = segmentById.get(id);
+    if (!segment) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "assist-citation";
+    const label = `${formatTimestamp(segment.start_ms)} · ${formatAssistSnapshotSpeaker(segment)}`;
+    button.textContent = label;
+    button.title = label;
+    button.setAttribute("aria-label", `Open frozen transcript citation at ${label}`);
+    button.addEventListener("click", () => focusTranscriptCitation(id));
+    container.append(button);
+  }
+  return container.childElementCount > 0 ? container : null;
+}
+
+function focusTranscriptCitation(segmentId) {
+  const node = segmentNodes.get(segmentId);
+  if (!node) return;
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+  node.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+  node.focus({ preventScroll: true });
+}
+
+async function copyAssistSuggestion() {
+  const suggestion = assistOutput?.suggestion.trim();
+  if (!suggestion) return;
+  const result = await bridge.copy(suggestion);
+  if (!result?.ok) {
+    setAssistMessage(result?.error || "The suggestion could not be copied.", "error");
+  } else {
+    setAssistMessage("Suggestion copied.", "status");
+  }
+  renderAssist();
+}
+
+function resetAssistRequest() {
+  if (assistOutput?.phase === "streaming" || assistRequestPromise) return;
+  assistOutput = null;
+  assistRequestContext = null;
+  const deliveryBlocked = assistDeliveryBlockedContext?.sessionId === assistStatus?.sessionId
+    && assistDeliveryBlockedContext.contextRevision === assistStatus?.contextRevision;
+  assistMessage = deliveryBlocked
+    ? {
+        text: "Wait for new finalized transcript text or restart the meeting before requesting assistance again.",
+        tone: "error"
+      }
+    : null;
+  renderAssist();
+  void refreshAssistStatus().then(() => requestAnimationFrame(() => elements.assistQuestion.focus()));
+}
+
+async function useLatestAssistContext() {
+  if (!assistOutput || assistOutput.phase === "streaming") return;
+  assistOutput = null;
+  assistRequestContext = null;
+  assistMessage = null;
+  await refreshAssistStatus();
+  renderAssist();
+  requestAnimationFrame(() => elements.assistQuestion.focus());
+}
+
+function keepAssistAnswer() {
+  if (!assistOutput) return;
+  assistOutput.staleAcknowledged = true;
+  renderAssist();
+}
+
+function describeAssistSendBlocker() {
+  if (!assistStatus?.sessionId) return "Start a meeting before requesting assistance.";
+  if (!assistStatus.contextSummary?.segmentCount) return "Wait for finalized transcript text before sending a question.";
+  const providerMessage = describeAssistProviderAvailability(assistStatus.provider);
+  if (providerMessage) return providerMessage;
+  if (assistDeliveryBlockedContext?.sessionId === assistStatus.sessionId
+    && assistDeliveryBlockedContext.contextRevision === assistStatus.contextRevision) {
+    return "Wait for new finalized transcript text or restart the meeting before requesting assistance again.";
+  }
+  if (!assistConsentChecked) return "Review the disclosure and confirm consent for this meeting.";
+  return "The assistance request is not ready yet. Review the question and try again.";
+}
+
+function formatAssistContextSummary(summary) {
+  return `${summary.segmentCount} finalized ${summary.segmentCount === 1 ? "segment" : "segments"} · ${formatTimestamp(summary.startMs)}–${formatTimestamp(summary.endMs)}`;
+}
+
+function summarizeAssistContextSnapshot(context) {
+  if (!context?.segments?.length) return null;
+  return {
+    segmentCount: context.segments.length,
+    transcriptChars: context.transcriptChars,
+    startMs: context.segments[0].start_ms,
+    endMs: context.segments.at(-1).end_ms
+  };
+}
+
+function formatAssistSnapshotSpeaker(segment) {
+  if (segment.track === "microphone") return "You";
+  return segment.speaker_id || "Meeting audio";
+}
+
+function appendAssistSuggestion(current, next) {
+  if (!current.trim()) return next;
+  return `${current.trimEnd()}\n\n${next}`;
+}
+
+function normalizeAssistIdentifier(value, label) {
+  if (typeof value !== "string") throw new Error(`The assistance ${label} is invalid.`);
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized.length > 256 || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new Error(`The assistance ${label} is invalid.`);
+  }
+  return normalized;
+}
+
+function normalizeAssistRevision(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("The assistance context revision is invalid.");
+  }
+  return value;
+}
+
+function isEditableShortcutTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return true;
+  return target.isContentEditable || Boolean(target.closest("[contenteditable]:not([contenteditable='false'])"));
 }
 
 async function changeModel() {

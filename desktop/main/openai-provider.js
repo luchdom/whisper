@@ -54,13 +54,10 @@ export function createOpenAIProvider({ fetch: fetchRequest } = {}) {
           role: "user",
           content: [{
             type: "input_text",
-            text: [
-              "Question from the meeting participant:",
-              normalizedQuestion,
-              "",
-              "Finalized meeting transcript (untrusted JSON data):",
-              normalizedContext
-            ].join("\n")
+            text: buildUserPrompt({
+              question: normalizedQuestion,
+              context: normalizedContext
+            })
           }]
         }
       ],
@@ -137,6 +134,15 @@ export function createOpenAIProvider({ fetch: fetchRequest } = {}) {
   }
 
   return Object.freeze({ streamAssist });
+}
+
+function buildUserPrompt({ question, context }) {
+  const lines = [
+    "Question from the meeting participant:",
+    question
+  ];
+  lines.push("", "Finalized meeting transcript context pack (untrusted JSON data):", context);
+  return lines.join("\n");
 }
 
 async function consumeEventStream(body, { signal, onData }) {

@@ -139,7 +139,8 @@ test("AI provider settings are overt, lazy, encrypted, and renderer-bounded", as
   assert.match(app, /setAttribute\("aria-live", tone === "error" \? "assertive" : "polite"\)/);
   assert.match(app, /providerDisclosureSummary\.textContent = providerStatus\.disclosure\.summary/);
   assert.match(policy, /Selecting OpenAI or importing a key sends nothing\./);
-  assert.match(policy, /Audio, drafts, and unconfirmed text are never sent\./);
+  assert.match(policy, /API key stays out of the renderer and context pack/);
+  assert.match(policy, /main process uses it only to authenticate (?:this|that explicit) OpenAI HTTPS request/);
 
   assert.match(main, /session\.fromPartition\("meeting-transcriber-openai", \{ cache: false \}\)/);
   assert.match(main, /credentialPath: path\.join\(app\.getPath\("userData"\), "openai-credential\.json"\)/);
@@ -166,6 +167,145 @@ test("AI provider settings are overt, lazy, encrypted, and renderer-bounded", as
   assert.match(main, /credentialState: status\.credentialState/);
   assert.match(main, /removable: status\.removable/);
   assert.match(main, /Hosted assistance is optional and must never prevent the local[^]*?providerController = null;/);
+});
+
+test("meeting assistance is overt, question-only, consent-gated, and isolated from the transcript", async () => {
+  const [html, app, styles, main] = await Promise.all([
+    readFile(new URL("../renderer/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../renderer/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../main/index.js", import.meta.url), "utf8")
+  ]);
+
+  assert.equal(html.indexOf('id="transcript-heading"') < html.indexOf('id="assist-heading"'), true);
+  assert.match(html, />Assist with this meeting</);
+  assert.match(html, /finalized transcript text\. Nothing is sent until you choose Send\./);
+  assert.match(html, /id="assist-question"[^>]*maxlength="1000"/s);
+  assert.match(html, /id="assist-consent" type="checkbox"/);
+  assert.match(html, />Send to OpenAI</);
+  assert.match(html, /<dialog id="assist-context-dialog"[^>]*aria-labelledby="assist-context-dialog-title"/);
+  assert.match(html, /read-only view shows the finalized context available now/);
+  assert.match(html, /Send freezes a fresh exact pack immediately before your request/);
+  assert.match(html, />Return to question</);
+  assert.doesNotMatch(html, /assist-(?:objective|private-context|ephemeral-context)/);
+
+  const sendAssistFunction = app.slice(
+    app.indexOf("async function sendAssistRequest"),
+    app.indexOf("function createPendingAssistOutput")
+  );
+  const useContextFunction = app.slice(
+    app.indexOf("function useReviewedAssistContext"),
+    app.indexOf("async function getExactAssistContext")
+  );
+  const handleAssistFunction = app.slice(
+    app.indexOf("function handleAssistEvent"),
+    app.indexOf("async function cancelAssistRequest")
+  );
+  const cancelAssistFunction = app.slice(
+    app.indexOf("async function cancelAssistRequest"),
+    app.indexOf("function renderAssistMessage")
+  );
+  const assistStatusFunction = app.slice(
+    app.indexOf("function refreshAssistStatus"),
+    app.indexOf("function sanitizeAssistStatus")
+  );
+  const mainAssistStatusFunction = main.slice(
+    main.indexOf("async function getRendererAssistStatus"),
+    main.indexOf("function buildAssistContextSummary")
+  );
+  assert.match(app, /bridge\.requestAssist\(\{ question \}\)/);
+  assert.match(app, /elements\.assistSend\.hidden = Boolean\(assistOutput\)/);
+  assert.match(sendAssistFunction, /if \(!question \|\| assistRequestPromise \|\| assistOutput\) return/);
+  assert.match(app, /&& !assistOutput\s*\n\s*\);/);
+  assert.doesNotMatch(app, /bridge\.requestAssist\(\{[^}]*objective|bridge\.requestAssist\(\{[^}]*ephemeralContext/s);
+  assert.match(app, /bridge\.setAssistConsent\(desired\)/);
+  assert.doesNotMatch(app, /grantAssistConsent|setAssistConsent\(\{/);
+  assert.match(app, /bridge\.getAssistContext\(\)/);
+  assert.match(sendAssistFunction, /const context = await getExactAssistContext\(\)/);
+  const refreshStatus = sendAssistFunction.indexOf("await refreshAssistStatus({ fresh: true })");
+  const cancelAfterStatus = sendAssistFunction.indexOf("attempt.throwIfCanceledBeforeDispatch()", refreshStatus);
+  const exactContext = sendAssistFunction.indexOf("await getExactAssistContext()", cancelAfterStatus);
+  const cancelAfterContext = sendAssistFunction.indexOf("attempt.throwIfCanceledBeforeDispatch()", exactContext);
+  const dispatch = sendAssistFunction.indexOf("attempt.markDispatched()", cancelAfterContext);
+  const request = sendAssistFunction.indexOf("bridge.requestAssist({ question })", dispatch);
+  const terminalWait = sendAssistFunction.indexOf("await attempt.waitForTerminal()", request);
+  assert.equal(
+    [refreshStatus, cancelAfterStatus, exactContext, cancelAfterContext, dispatch, request, terminalWait]
+      .every((index) => index >= 0),
+    true,
+    "every assistance request lifecycle marker is present"
+  );
+  assert.equal(
+    refreshStatus < cancelAfterStatus
+      && cancelAfterStatus < exactContext
+      && exactContext < cancelAfterContext
+      && cancelAfterContext < dispatch
+      && dispatch < request
+      && request < terminalWait,
+    true,
+    "cancellation is checked after preflight awaits and terminal delivery is awaited after dispatch"
+  );
+  assert.doesNotMatch(sendAssistFunction, /reviewed|cached|assistContextSnapshot/i);
+  assert.doesNotMatch(app, /assistReviewedContext|assistContextSnapshot/);
+  assert.match(useContextFunction, /closeAssistContextReview\(\)/);
+  assert.match(useContextFunction, /elements\.assistQuestion\.focus\(\)/);
+  assert.doesNotMatch(useContextFunction, /=\s*context|getExactAssistContext|requestAssist/);
+  assert.match(app, /formatTimestamp\(segment\.start_ms\).*formatTimestamp\(segment\.end_ms\).*formatAssistSnapshotSpeaker\(segment\)/);
+  assert.match(app, /bridge\.onAssistEvent\(handleAssistEvent\)/);
+  assert.equal(
+    handleAssistFunction.indexOf("if (!attempt || attempt.closed) return")
+      < handleAssistFunction.indexOf("assistEventGate.accepts(event)"),
+    true,
+    "closed or missing attempts reject late events before gate or output mutation"
+  );
+  assert.equal(
+    handleAssistFunction.indexOf("assistEventGate.accepts(event)")
+      < handleAssistFunction.indexOf("attempt.bindStarted(event)"),
+    true,
+    "attempt identity is bound only after the strict event gate accepts start"
+  );
+  assert.equal(
+    handleAssistFunction.indexOf("attempt.acceptTerminal(event)")
+      < handleAssistFunction.lastIndexOf("renderAssist()"),
+    true,
+    "terminal identity is accepted before output mutation and rendering completes in the same task"
+  );
+  assert.equal(
+    cancelAssistFunction.indexOf("attempt?.cancel()")
+      < cancelAssistFunction.indexOf("bridge.cancelAssist()"),
+    true,
+    "renderer-owned preflight cancellation closes before main-process cancellation"
+  );
+  assert.match(app, /error instanceof AssistTerminalDeliveryTimeoutError[^]*?assistDeliveryBlockedContext = attempt\.context/s);
+  assert.match(app, /assistDeliveryBlockedContext\.contextRevision !== next\.contextRevision[^]*?assistDeliveryBlockedContext = null/s);
+  assert.equal(
+    mainAssistStatusFunction.indexOf("await getRendererProviderStatus()")
+      < mainAssistStatusFunction.indexOf("assistController?.getContextSnapshot()"),
+    true,
+    "main snapshots Assist context after the awaited provider read"
+  );
+  assert.match(assistStatusFunction, /assistStatusGate\.accepts\(identity, result\.assist\?\.sessionId\)[^]*?applyAssistStatus/s);
+  assert.match(assistStatusFunction, /scheduleAssistStatusRefresh\(\)[^]*?assistStatusGate\.invalidate\(\)[^]*?setTimeout/s);
+  assert.match(app, /function beginAssistMeeting\(sessionId\)[^]*?assistStatusGate\.transition\(sessionId\)[^]*?refreshAssistStatus\(\)/s);
+  assert.match(app, /handleAssistConsentChange\(\)[^]*?const identity = assistStatusGate\.invalidate\(\)[^]*?await bridge\.setAssistConsent\(desired\)[^]*?assistStatusGate\.isCurrent\(identity\)/s);
+  assert.match(app, /function beginAssistMeeting\(sessionId\)[^]*?supersedeAssistRequestForMeetingTransition\(\)[^]*?assistStatusGate\.transition\(sessionId\)/s);
+  assert.match(app, /function endAssistMeeting\(sessionId\)[^]*?supersedeAssistRequestForMeetingTransition\(\)[^]*?assistStatusGate\.transition\(null\)/s);
+  assert.match(sendAssistFunction, /const meetingIdentity = assistStatusGate\.capture\(\)/);
+  assert.match(sendAssistFunction, /catch \(error\)[^]*?assistStatusGate\.isSameSession\(meetingIdentity\)[^]*?if \(!ownsCurrentMeeting\) return/s);
+  assert.match(sendAssistFunction, /finally[^]*?const ownsAttempt = assistRequestAttempt === attempt[^]*?if \(assistStatusGate\.isSameSession\(meetingIdentity\)\)[^]*?refreshAssistStatus\(\{ fresh: true \}\)/s);
+  assert.match(app, /bridge\.onAssistShortcut\(\(\) => void revealAssist\(\{ focusQuestion: true \}\)\)/);
+  assert.match(app, /if \(event\.channel === "suggestion"\) assistOutput\.suggestion \+= event\.delta/);
+  assert.match(app, /does not promote provider-generated classifications to\s*\/\/ meeting facts\./s);
+  assert.match(app, /assistOutput\.contextSnapshot\.segments/);
+  assert.match(app, /Local transcription continues normally\./);
+  assert.doesNotMatch(app, /transcript\.(?:reconcile|replace|restore|reset)\([^)]*assist/i);
+
+  assert.match(app, /function isEditableShortcutTarget\(target\)/);
+  assert.match(app, /\["INPUT", "TEXTAREA", "SELECT"\]\.includes\(target\.tagName\)/);
+  assert.match(app, /target\.closest\("\[contenteditable\]:not\(\[contenteditable='false'\]\)"\)/);
+  assert.match(app, /!event\.target\?\.closest\?\.\("dialog"\)/);
+  assert.match(styles, /\.assist-panel\s*\{/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[^]*?\.assist-progress-mark/s);
 });
 
 test("selected settings drive start, successful stop precedes autosave, and failed starts restore transcript aliases", async () => {
@@ -239,7 +379,7 @@ test("main owns transcript destinations, resets autosave only after backend star
   assert.match(main, /Never advertise Ready during that bootstrap gap\.[^]*?trayController\.setState\("preparing"\)/);
   assert.match(main, /getWindowCloseAction\(\{/);
   assert.match(main, /function createWindow\(\) \{\s*if \(mainWindow && !mainWindow\.isDestroyed\(\)\) return mainWindow;/);
-  assert.match(main, /function showMainWindow[^]*?if \(!desktopBootstrapReady\) \{\s*queueWindowShow\(\{ focusStart \}\);\s*return;/);
+  assert.match(main, /function showMainWindow[^]*?if \(!desktopBootstrapReady\) \{\s*queueWindowShow\(\{ focusStart, focusAssist \}\);\s*return;/);
   const bootstrap = main.slice(main.indexOf("app.whenReady().then"), main.indexOf('app.on("window-all-closed"'));
   assert.equal(bootstrap.indexOf("registerIpc()") < bootstrap.indexOf("desktopBootstrapReady = true"), true);
   assert.equal(bootstrap.indexOf("createApplicationTray()") < bootstrap.indexOf("desktopBootstrapReady = true"), true);

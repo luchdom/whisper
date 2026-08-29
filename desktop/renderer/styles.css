@@ -46,13 +46,15 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 .source-card:has(input:focus-visible) {
   outline: 3px solid color-mix(in srgb, var(--focus) 40%, transparent);
   outline-offset: 2px;
@@ -183,7 +185,7 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(120px, 1fr) auto;
   gap: 12px;
   min-height: 0;
   padding: 16px 24px 20px;
@@ -452,6 +454,435 @@ h2 {
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.assist-panel {
+  grid-row: 4;
+  display: grid;
+  gap: 12px;
+  max-height: min(42vh, 420px);
+  padding: 13px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.assist-header,
+.assist-context-card,
+.assist-result-header,
+.assist-footer,
+.assist-collapsed,
+.assist-collapsed-actions,
+.assist-field-meta,
+.assist-result-actions,
+.assist-provider-availability,
+.assist-stale > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assist-header > div,
+.assist-context-card > div,
+.assist-result-header > div,
+.assist-provider-availability > p {
+  min-width: 0;
+}
+
+.assist-header p,
+.assist-collapsed p,
+.assist-context-card p,
+.assist-question-field p,
+.assist-consent-card p,
+.assist-result-header p,
+.assist-provider-availability p,
+.assist-stale p,
+.assist-context-dialog p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.assist-state-badge,
+.assist-result-state {
+  flex: 0 0 auto;
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.assist-state-badge[data-state="ready"],
+.assist-result-state[data-state="complete"] {
+  color: var(--success);
+}
+
+.assist-state-badge[data-state="working"],
+.assist-result-state[data-state="incomplete"] {
+  color: var(--warning);
+}
+
+.assist-result-state[data-state="error"] {
+  color: var(--danger);
+}
+
+.assist-empty {
+  padding: 4px 0;
+  color: var(--text-muted);
+}
+
+.assist-empty p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.assist-collapsed {
+  align-items: center;
+}
+
+.assist-collapsed-actions,
+.assist-result-actions,
+.assist-stale > div {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.primary-assist-action {
+  min-height: 36px;
+  padding: 0 14px;
+  color: var(--accent-text);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.primary-assist-action:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.primary-assist-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.assist-text-action {
+  min-height: 34px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  border: 0;
+  background: transparent;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.assist-text-action:hover {
+  color: var(--text);
+  text-decoration-color: currentColor;
+}
+
+.assist-expanded {
+  display: grid;
+  gap: 12px;
+}
+
+.assist-context-card,
+.assist-consent-card,
+.assist-result,
+.assist-provider-availability {
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+}
+
+.assist-context-card h3,
+.assist-consent-card h3,
+.assist-result h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.assist-question-field,
+.assist-consent-card,
+.assist-result,
+.assist-result-content {
+  display: grid;
+  gap: 8px;
+}
+
+.assist-question-field > label {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.assist-question-field textarea {
+  width: 100%;
+  min-height: 82px;
+  max-height: 180px;
+  padding: 9px 10px;
+  resize: vertical;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  line-height: 1.5;
+}
+
+.assist-question-field textarea:disabled,
+.assist-consent-row:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.assist-field-meta {
+  align-items: start;
+}
+
+.assist-field-meta p {
+  margin-top: 0;
+}
+
+#assist-question-count {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.assist-validation {
+  margin-top: 0 !important;
+  color: var(--danger) !important;
+}
+
+.assist-consent-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 40px;
+  padding: 7px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.assist-consent-row input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.assist-policy-version {
+  margin-top: 0 !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.assist-provider-availability {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
+  background: var(--warning-bg);
+}
+
+.assist-provider-availability p {
+  margin-top: 0;
+  color: var(--warning);
+}
+
+.assist-progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.assist-progress-mark {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: assist-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes assist-pulse {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+.assist-message {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assist-message[data-tone="error"] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: var(--danger-bg);
+}
+
+.assist-message[data-tone="warning"] {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--border));
+  background: var(--warning-bg);
+}
+
+.assist-result {
+  background: var(--surface);
+}
+
+.assist-result-content {
+  gap: 9px;
+}
+
+.assist-channel {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.assist-channel[data-channel="suggestion"] {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.assist-channel-title {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.assist-channel-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.assist-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.assist-citation {
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0 8px;
+  overflow: hidden;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.assist-citation:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.assist-stale {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
+  border-radius: 8px;
+  background: var(--warning-bg);
+}
+
+.assist-stale p {
+  margin-top: 0;
+  color: var(--warning);
+}
+
+.assist-footer {
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.assist-context-dialog {
+  width: min(700px, calc(100vw - 48px));
+}
+
+.assist-context-dialog-content {
+  display: grid;
+}
+
+.assist-context-dialog-body {
+  min-height: 150px;
+  max-height: min(58vh, 520px);
+  padding: 16px 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.assist-context-dialog-summary {
+  margin: 0 0 12px !important;
+}
+
+.assist-context-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assist-context-list li {
+  display: grid;
+  grid-template-columns: minmax(90px, 120px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.assist-context-segment-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.assist-context-segment-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.assist-context-dialog-empty {
+  margin: 0 !important;
+  text-align: center;
 }
 
 .transcript-header {
@@ -1035,6 +1466,40 @@ dialog::backdrop {
 
   .header-actions {
     gap: 10px;
+  }
+
+  .assist-header,
+  .assist-context-card,
+  .assist-collapsed,
+  .assist-provider-availability {
+    align-items: stretch;
+  }
+
+  .assist-context-card,
+  .assist-collapsed,
+  .assist-provider-availability {
+    flex-direction: column;
+  }
+
+  .assist-context-card .secondary-action,
+  .assist-provider-availability .secondary-action {
+    width: 100%;
+  }
+
+  .assist-footer > button {
+    flex: 1 1 120px;
+  }
+
+  .assist-context-list li {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assist-progress-mark {
+    animation: none;
+    opacity: 1;
   }
 }
 

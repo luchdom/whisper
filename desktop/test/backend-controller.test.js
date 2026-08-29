@@ -9,6 +9,7 @@ import {
   STOP_TIMEOUT_MS,
   resolveLaunch
 } from "../main/backend-controller.js";
+import { AssistController } from "../main/assist-controller.js";
 
 test("fake backend uses Electron as Node without changing the production protocol", () => {
   const launch = resolveLaunch({
@@ -122,24 +123,56 @@ test("fake sidecar exercises the same start, audio, stop, and shutdown lifecycle
     env: { ...process.env, MEETING_TRANSCRIBER_FAKE: "1" }
   });
   const events = [];
-  controller.on("event", (event) => events.push(event));
+  const assist = new AssistController({
+    provider: Object.freeze({
+      async *streamAssist() {}
+    })
+  });
+  controller.on("event", (event) => {
+    events.push(event);
+    assist.ingest(event);
+  });
 
   try {
     const ready = await controller.startSession({ model: "small", device: "cpu", compute: "int8" });
     assert.equal(ready.status, "ready");
+    assist.startSession(ready.session_id);
+    const liveFinal = controller.waitForEvent(
+      (event) => event.type === "final_segment" ? { resolve: event } : null,
+      1_000,
+      "The fake backend did not emit live finalized text."
+    );
     await controller.sendAudio({
       track: "system",
       startMs: 0,
       endMs: 200,
       pcm: new Uint8Array(6_400)
     });
+    const finalizedWhileActive = await liveFinal;
+    const reviewed = assist.freezeContextForRequest();
+    assert.equal(controller.sessionState, "ready");
+    assert.equal(reviewed.sessionId, ready.session_id);
+    assert.deepEqual(
+      reviewed.segments.map(({ id, revision, text }) => ({ id, revision, text })),
+      [{ id: "fake-segment-1", revision: 2, text: "Local test transcript." }]
+    );
     await controller.stopSession();
     assert.equal(events.some(({ type }) => type === "partial_transcript"), true);
-    assert.equal(events.some(({ type }) => type === "final_segment"), true);
+    assert.deepEqual(
+      events
+        .filter(({ type, session_id }) => type === "final_segment" && session_id === ready.session_id)
+        .map(({ segment }) => segment.revision),
+      [2, 3]
+    );
     assert.equal(events.some(({ type }) => type === "session_stopped"), true);
+    assert.equal(
+      events.indexOf(finalizedWhileActive) < events.findIndex(({ type }) => type === "session_stopped"),
+      true
+    );
 
     const secondReady = await controller.startSession({ model: "small", device: "cpu", compute: "int8" });
     assert.equal(secondReady.status, "ready");
+    assist.startSession(secondReady.session_id);
     await controller.sendAudio({
       track: "microphone",
       startMs: 0,
@@ -149,6 +182,12 @@ test("fake sidecar exercises the same start, audio, stop, and shutdown lifecycle
     await controller.stopSession();
     assert.equal(events.filter(({ type, status }) => type === "engine_status" && status === "ready").length, 2);
     assert.equal(events.filter(({ type }) => type === "session_stopped").length, 2);
+    assert.deepEqual(
+      events
+        .filter(({ type, session_id }) => type === "final_segment" && session_id === secondReady.session_id)
+        .map(({ segment }) => segment.revision),
+      [2, 3]
+    );
   } finally {
     await controller.shutdown();
   }
@@ -257,9 +296,12 @@ test("a stop timeout terminates the ambiguous child before another session", asy
       MEETING_TRANSCRIBER_FAKE: "1",
       MEETING_TRANSCRIBER_FAKE_STOP_DELAY_MS: "250"
     },
-    startTimeoutMs: 200,
+    // This test targets the 20 ms stop timeout. Give process startup and
+    // teardown normal headroom so parallel-suite load cannot fail the wrong
+    // lifecycle phase before the stop assertion is reached.
+    startTimeoutMs: 2_000,
     stopTimeoutMs: 20,
-    shutdownTimeoutMs: 200
+    shutdownTimeoutMs: 1_000
   });
 
   await controller.startSession({ model: "small" });

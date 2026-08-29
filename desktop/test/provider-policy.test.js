@@ -11,6 +11,7 @@ import {
   buildTranscriptContext,
   getProviderCatalog,
   normalizeAssistQuestion,
+  normalizeProviderContextSnapshot,
   resolveProviderExternalLink,
   sanitizeStoredProviderSettings
 } from "../main/provider-policy.js";
@@ -30,7 +31,9 @@ test("provider policy defaults to Off and represents the future local mode as un
 
 test("provider disclosure and external navigation use fixed main-owned values", () => {
   assert.match(PROVIDER_DISCLOSURE.summary, /Selecting OpenAI or importing a key sends nothing\./);
-  assert.match(PROVIDER_DISCLOSURE.summary, /Audio, drafts, and unconfirmed text are never sent\./);
+  assert.match(PROVIDER_DISCLOSURE.summary, /question.*finalized transcript text.*anonymous speaker labels and timestamps/i);
+  assert.match(PROVIDER_DISCLOSURE.summary, /Audio and draft transcript text are never sent\./);
+  assert.match(PROVIDER_DISCLOSURE.summary, /API key stays out of the renderer and context pack.*authenticate this OpenAI HTTPS request/i);
   assert.deepEqual(PROVIDER_DISCLOSURE.links.map(({ id }) => id), [
     "privacy",
     "data-controls",
@@ -43,6 +46,48 @@ test("provider disclosure and external navigation use fixed main-owned values", 
   assert.throws(() => resolveProviderExternalLink("https://attacker.example"), {
     code: "invalid_provider_link"
   });
+});
+
+test("provider accepts only an exact deeply frozen canonical context snapshot", () => {
+  const segment = Object.freeze({
+    id: "segment-7",
+    revision: 3,
+    start_ms: 12_000,
+    end_ms: 13_500,
+    track: "system",
+    text: "  Preserve this exact finalized text.  ",
+    language: "en",
+    speaker_id: "speaker-2"
+  });
+  const snapshot = Object.freeze({
+    sessionId: "meeting-frozen",
+    revision: 9,
+    transcriptChars: segment.text.length,
+    segments: Object.freeze([segment])
+  });
+  const normalized = normalizeProviderContextSnapshot(snapshot, {
+    expectedSessionId: "meeting-frozen"
+  });
+  assert.deepEqual(normalized, snapshot);
+  assert.equal(normalized.segments[0].text, "  Preserve this exact finalized text.  ");
+  assert.doesNotMatch(buildTranscriptContext(normalized), /"(?:id|revision|track|speakerId|language)":/);
+  assert.match(buildTranscriptContext(normalized), /"startMs":12000/);
+  assert.match(buildTranscriptContext(normalized), /"endMs":13500/);
+  assert.match(buildTranscriptContext(normalized), /"speakerLabel":"speaker-2"/);
+  assert.match(buildTranscriptContext(normalized), /"text":"  Preserve this exact finalized text\.  "/);
+
+  assert.throws(() => normalizeProviderContextSnapshot({ ...snapshot }), { code: "invalid_context" });
+  assert.throws(() => normalizeProviderContextSnapshot(Object.freeze({
+    ...snapshot,
+    segments: [segment]
+  })), { code: "invalid_context" });
+  assert.throws(() => normalizeProviderContextSnapshot(Object.freeze({
+    ...snapshot,
+    unexpected: true
+  })), { code: "invalid_context" });
+  assert.throws(() => normalizeProviderContextSnapshot(snapshot, {
+    expectedSessionId: "another-meeting"
+  }), { code: "invalid_session" });
 });
 
 test("provider policy accepts only the immutable current OpenAI model allowlist", () => {

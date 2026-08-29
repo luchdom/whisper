@@ -10,7 +10,7 @@ import {
   buildTranscriptContext,
   getProviderCatalog,
   normalizeAssistQuestion,
-  normalizeFinalSegment,
+  normalizeProviderContextSnapshot,
   normalizeSessionId
 } from "./provider-policy.js";
 
@@ -51,7 +51,7 @@ export class ProviderController extends EventEmitter {
     this.mode = DEFAULT_PROVIDER_MODE;
     this.model = DEFAULT_OPENAI_MODEL_ID;
     this.session = null;
-    this.inFlight = null;
+    this.operations = new Set();
     this.requestSequence = 0;
   }
 
@@ -82,8 +82,6 @@ export class ProviderController extends EventEmitter {
     this.cancelRequest();
     this.session = {
       id,
-      revision: 0,
-      segments: [],
       consentVersion: null,
       requestCount: 0,
       lastRequestAt: null
@@ -91,26 +89,11 @@ export class ProviderController extends EventEmitter {
     return Object.freeze({ sessionId: id, revision: 0 });
   }
 
-  stopSession() {
-    const existed = this.session !== null;
+  stopSession(sessionId = this.session?.id) {
+    if (!this.session || sessionId !== this.session.id) return false;
     this.cancelRequest();
     this.session = null;
-    return existed;
-  }
-
-  addFinalSegment(value) {
-    if (!this.session) return false;
-    const segment = normalizeFinalSegment(value);
-    if (!segment) return false;
-    this.session.segments.push(segment);
-    if (this.session.segments.length > PROVIDER_LIMITS.maxStoredSegments) {
-      this.session.segments.splice(
-        0,
-        this.session.segments.length - PROVIDER_LIMITS.maxStoredSegments
-      );
-    }
-    this.session.revision += 1;
-    return Object.freeze({ revision: this.session.revision });
+    return true;
   }
 
   grantConsent({ sessionId, disclosureVersion } = {}) {
@@ -162,7 +145,7 @@ export class ProviderController extends EventEmitter {
       encryptionAvailable: encryptionAvailable === true,
       sessionActive: this.session !== null,
       consentGranted: this.session?.consentVersion === PROVIDER_DISCLOSURE_VERSION,
-      inFlight: this.inFlight !== null,
+      inFlight: this.operations.size > 0,
       disclosure: PROVIDER_DISCLOSURE,
       catalog: getProviderCatalog()
     });
@@ -170,8 +153,8 @@ export class ProviderController extends EventEmitter {
 
   async requestAssist({
     sessionId,
+    contextSnapshot,
     question,
-    expectedRevision,
     signal,
     onEvent = () => {}
   } = {}) {
@@ -184,12 +167,6 @@ export class ProviderController extends EventEmitter {
         "The selected assistance provider is unavailable."
       );
     }
-    if (this.inFlight) {
-      throw new ProviderControllerError(
-        "provider_busy",
-        "An assistance request is already in progress."
-      );
-    }
     if (!this.session || normalizeSessionId(sessionId) !== this.session.id) {
       throw invalidSessionError();
     }
@@ -199,11 +176,13 @@ export class ProviderController extends EventEmitter {
         "Approve data sharing for this meeting before requesting assistance."
       );
     }
-    if (expectedRevision !== undefined
-      && (!Number.isSafeInteger(expectedRevision) || expectedRevision !== this.session.revision)) {
+    const snapshot = normalizeProviderContextSnapshot(contextSnapshot, {
+      expectedSessionId: this.session.id
+    });
+    if (snapshot.segments.length === 0) {
       throw new ProviderControllerError(
-        "stale_transcript_revision",
-        "The transcript changed before the assistance request started."
+        "assist_context_empty",
+        "Wait for finalized transcript text before requesting assistance."
       );
     }
     if (this.session.requestCount >= PROVIDER_LIMITS.maxRequestsPerSession) {
@@ -226,13 +205,16 @@ export class ProviderController extends EventEmitter {
     const operation = {
       requestId: `assist-${++this.requestSequence}`,
       session: this.session,
-      revision: this.session.revision,
+      snapshot,
+      revision: snapshot.revision,
       abortController: new AbortController(),
       abortReason: null,
       timeout: null,
       removeExternalAbort: null
     };
-    this.inFlight = operation;
+    this.operations.add(operation);
+    operation.session.requestCount += 1;
+    operation.session.lastRequestAt = currentTime;
     operation.timeout = this.setTimeoutFn(() => {
       operation.abortReason = "timeout";
       operation.abortController.abort();
@@ -251,7 +233,7 @@ export class ProviderController extends EventEmitter {
 
     try {
       throwIfOperationAborted(operation);
-      const context = this.contextBuilder(operation.session.segments);
+      const context = this.contextBuilder(operation.snapshot);
       if (typeof context !== "string"
         || Buffer.byteLength(context, "utf8") > PROVIDER_LIMITS.maxContextBytes) {
         throw new ProviderControllerError(
@@ -261,10 +243,8 @@ export class ProviderController extends EventEmitter {
       }
       const apiKey = await this.credentialStore.decryptForRequest();
       throwIfOperationAborted(operation);
-      if (this.inFlight !== operation || this.session !== operation.session) throw abortedRequestError();
+      if (this.session !== operation.session) throw abortedRequestError();
 
-      operation.session.requestCount += 1;
-      operation.session.lastRequestAt = this.now();
       const result = await this.openAIProvider.streamAssist({
         apiKey,
         model: this.model,
@@ -272,7 +252,7 @@ export class ProviderController extends EventEmitter {
         context,
         signal: operation.abortController.signal,
         onEvent: async (event) => {
-          if (this.inFlight !== operation || this.session !== operation.session) return;
+          if (operation.abortController.signal.aborted || this.session !== operation.session) return;
           const normalized = normalizeProviderEvent(event);
           const envelope = Object.freeze({
             ...normalized,
@@ -285,7 +265,7 @@ export class ProviderController extends EventEmitter {
         }
       });
       throwIfOperationAborted(operation);
-      if (this.inFlight !== operation || this.session !== operation.session) throw abortedRequestError();
+      if (this.session !== operation.session) throw abortedRequestError();
       return Object.freeze({
         requestId: operation.requestId,
         sessionId: operation.session.id,
@@ -308,15 +288,19 @@ export class ProviderController extends EventEmitter {
     } finally {
       this.clearTimeoutFn(operation.timeout);
       operation.removeExternalAbort?.();
-      if (this.inFlight === operation) this.inFlight = null;
+      this.operations.delete(operation);
     }
   }
 
   cancelRequest() {
-    if (!this.inFlight) return false;
-    this.inFlight.abortReason = "canceled";
-    this.inFlight.abortController.abort();
-    return true;
+    let canceled = false;
+    for (const operation of this.operations) {
+      if (operation.abortController.signal.aborted) continue;
+      operation.abortReason = "canceled";
+      operation.abortController.abort();
+      canceled = true;
+    }
+    return canceled;
   }
 }
 

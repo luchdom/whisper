@@ -126,8 +126,129 @@
           </div>
           <footer id="privacy-note" class="privacy-note">Audio is never saved. Final text stays here until you save it or start another meeting.</footer>
         </section>
+
+        <section id="assist-panel" class="assist-panel" aria-labelledby="assist-heading">
+          <header class="assist-header">
+            <div>
+              <h2 id="assist-heading">Assist with this meeting</h2>
+              <p>Ask about finalized transcript text. Nothing is sent until you choose Send.</p>
+            </div>
+            <span id="assist-state-badge" class="assist-state-badge" hidden></span>
+          </header>
+
+          <div id="assist-empty" class="assist-empty">
+            <p id="assist-empty-message">Start transcription to use meeting assistance.</p>
+          </div>
+
+          <div id="assist-collapsed" class="assist-collapsed" hidden>
+            <p>Audio, draft text, and unconfirmed text are never included.</p>
+            <div class="assist-collapsed-actions">
+              <button id="expand-assist" class="primary-assist-action" type="button" aria-expanded="false" aria-controls="assist-expanded">Ask a question</button>
+              <button id="dismiss-assist-collapsed" class="assist-text-action" type="button">Dismiss</button>
+            </div>
+          </div>
+
+          <div id="assist-expanded" class="assist-expanded" hidden>
+            <section class="assist-context-card" aria-labelledby="assist-context-heading">
+              <div>
+                <h3 id="assist-context-heading">Using finalized transcript text from this meeting</h3>
+                <p id="assist-context-summary">No finalized context is available yet.</p>
+              </div>
+              <button id="review-assist-context" class="secondary-action" type="button">Review context</button>
+            </section>
+
+            <div id="assist-provider-availability" class="assist-provider-availability" role="status" aria-live="polite" aria-atomic="true" hidden>
+              <p id="assist-provider-message"></p>
+              <button id="open-assist-settings" class="secondary-action" type="button">Open Settings</button>
+            </div>
+
+            <div class="assist-question-field">
+              <label for="assist-question">What would you like help with?</label>
+              <textarea
+                id="assist-question"
+                rows="3"
+                maxlength="1000"
+                placeholder="For example: What is the strongest next point to make?"
+                aria-describedby="assist-question-help assist-question-validation assist-question-count"
+              ></textarea>
+              <div class="assist-field-meta">
+                <p id="assist-question-help">Your question is sent only when you choose Send.</p>
+                <span id="assist-question-count" hidden>0 / 1,000</span>
+              </div>
+              <p id="assist-question-validation" class="assist-validation" role="alert" hidden></p>
+            </div>
+
+            <section class="assist-consent-card" aria-labelledby="assist-consent-heading">
+              <div>
+                <h3 id="assist-consent-heading">Send this context to OpenAI?</h3>
+                <p id="assist-disclosure">Provider disclosure is loading.</p>
+              </div>
+              <label class="assist-consent-row" for="assist-consent">
+                <input id="assist-consent" type="checkbox" aria-describedby="assist-disclosure assist-policy-version">
+                <span>I understand and want to send this context for this meeting.</span>
+              </label>
+              <p id="assist-policy-version" class="assist-policy-version"></p>
+              <div id="assist-provider-links" class="provider-links" aria-label="OpenAI provider information"></div>
+            </section>
+
+            <div id="assist-progress" class="assist-progress" role="status" aria-live="polite" aria-atomic="true" hidden>
+              <span class="assist-progress-mark" aria-hidden="true"></span>
+              <span>Thinking with finalized transcript…</span>
+            </div>
+            <div id="assist-message" class="assist-message" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+
+            <section id="assist-result" class="assist-result" aria-labelledby="assist-result-heading" hidden>
+              <header class="assist-result-header">
+                <div>
+                  <h3 id="assist-result-heading">Assistance</h3>
+                  <p id="assist-result-context"></p>
+                </div>
+                <span id="assist-result-state" class="assist-result-state"></span>
+              </header>
+              <div id="assist-stale" class="assist-stale" role="status" hidden>
+                <p>New finalized transcript text arrived. This answer used the earlier context pack.</p>
+                <div>
+                  <button id="use-latest-assist-context" class="secondary-action" type="button">Use latest context</button>
+                  <button id="keep-assist-answer" class="assist-text-action" type="button">Keep this answer</button>
+                </div>
+              </div>
+              <div id="assist-result-content" class="assist-result-content"></div>
+              <div id="assist-result-actions" class="assist-result-actions">
+                <button id="copy-assist-suggestion" class="secondary-action" type="button" hidden>Copy suggestion</button>
+                <button id="reset-assist-request" class="secondary-action" type="button" hidden>Ask another question</button>
+              </div>
+            </section>
+
+            <footer class="assist-footer">
+              <button id="dismiss-assist" class="secondary-action" type="button">Dismiss</button>
+              <button id="cancel-assist" class="secondary-action" type="button" hidden>Cancel</button>
+              <button id="send-assist" class="primary-assist-action" type="button" disabled>Send to OpenAI</button>
+            </footer>
+          </div>
+        </section>
       </main>
     </div>
+
+    <dialog id="assist-context-dialog" class="assist-context-dialog" aria-labelledby="assist-context-dialog-title" aria-describedby="assist-context-dialog-description">
+      <div class="assist-context-dialog-content">
+        <header class="settings-dialog-header">
+          <div>
+            <h2 id="assist-context-dialog-title">Review context</h2>
+            <p id="assist-context-dialog-description">This read-only view shows the finalized context available now. Send freezes a fresh exact pack immediately before your request.</p>
+          </div>
+          <button id="close-assist-context-top" class="secondary-action dialog-close" type="button" aria-label="Close context review">Close</button>
+        </header>
+        <div class="assist-context-dialog-body">
+          <p id="assist-context-dialog-summary" class="assist-context-dialog-summary"></p>
+          <ol id="assist-context-list" class="assist-context-list"></ol>
+          <p id="assist-context-dialog-empty" class="assist-context-dialog-empty" hidden>No finalized transcript context is available.</p>
+        </div>
+        <footer class="settings-dialog-footer">
+          <button id="back-assist-context" class="secondary-action" type="button">Back</button>
+          <button id="use-assist-context" class="primary-dialog-action" type="button">Return to question</button>
+        </footer>
+      </div>
+    </dialog>
 
     <dialog id="settings-dialog" aria-labelledby="settings-title" aria-describedby="settings-description">
       <div class="settings-dialog-content">

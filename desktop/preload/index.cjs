@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
   openProviderLink: (linkId) => PROVIDER_LINKS.has(linkId)
     ? ipcRenderer.invoke("meeting:provider-open-link", linkId)
     : Promise.resolve({ ok: false, error: "Invalid provider link." }),
+  getAssistStatus: () => ipcRenderer.invoke("meeting:assist-status"),
+  getAssistContext: () => ipcRenderer.invoke("meeting:assist-context"),
+  setAssistConsent: (enabled) => ipcRenderer.invoke("meeting:assist-consent", enabled === true),
+  requestAssist: ({ question }) => ipcRenderer.invoke("meeting:assist-request", { question }),
+  cancelAssist: () => ipcRenderer.invoke("meeting:assist-cancel"),
   getPlatform: () => ipcRenderer.invoke("meeting:platform"),
   getEnginePrerequisites: () => ipcRenderer.invoke("meeting:engine-prerequisites"),
   openPythonDownloadPage: () => ipcRenderer.invoke("meeting:open-python-download"),
@@ -41,6 +46,8 @@ contextBridge.exposeInMainWorld("meeting", Object.freeze({
     if (TRAY_ACTIONS.has(action)) listener(action);
   }),
   onBackendEvent: (listener) => on("meeting:backend-event", listener),
+  onAssistEvent: (listener) => on("meeting:assist-event", listener),
+  onAssistShortcut: (listener) => on("meeting:assist-shortcut", () => listener()),
   onBeforeClose: (listener) => on("meeting:before-close", listener),
   notifyCloseReady: () => ipcRenderer.send("meeting:close-ready")
 }));

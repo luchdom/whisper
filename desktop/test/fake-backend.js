@@ -5,6 +5,7 @@ let sessionId = null;
 let sessionCounter = 0;
 let revision = 0;
 let firstPacket = null;
+let liveFinalEmitted = false;
 let diarization = "off";
 let model = "small";
 let translation = "off";
@@ -31,6 +32,7 @@ lines.on("line", (line) => {
     sessionId = `fake-session-${++sessionCounter}`;
     revision = 0;
     firstPacket = null;
+    liveFinalEmitted = false;
     diarization = command.diarization === "online" ? "online" : "off";
     model = typeof command.model === "string" ? command.model : "small";
     translation = command.translation === "en_to_pt_br" ? "en_to_pt_br" : "off";
@@ -84,6 +86,15 @@ lines.on("line", (line) => {
         type: "partial_transcript",
         session_id: sessionId,
         segment: segment(false, command, "Local test transcript…")
+      });
+    }
+    if (!liveFinalEmitted) {
+      revision += 1;
+      liveFinalEmitted = true;
+      emit({
+        type: "final_segment",
+        session_id: sessionId,
+        segment: segment(true, command, "Local test transcript.")
       });
     }
     return;

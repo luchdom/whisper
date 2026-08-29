@@ -81,12 +81,11 @@ test("controller forwards normalized session/revision events without exposing cr
   const controller = new ProviderController({ credentialStore, openAIProvider: provider });
   controller.setMode("openai");
   controller.startSession("meeting-events");
-  controller.addFinalSegment({ speaker: "Speaker 1", text: "Friday is better." });
   grant(controller, "meeting-events");
 
   const result = await controller.requestAssist({
     sessionId: "meeting-events",
-    expectedRevision: 1,
+    contextSnapshot: createContextSnapshot("meeting-events", 1),
     question: "What should I say?",
     onEvent: (event) => delivered.push(event)
   });
@@ -141,7 +140,7 @@ test("controller preserves the sanitized cleanup-required credential result", as
   assert.equal(transport.calls, 0);
 });
 
-test("controller enforces queue zero and supports cancellation without retry", async () => {
+test("controller transport supports outer cancellation without retry", async () => {
   const credentialStore = createCredentialStore();
   let providerCalls = 0;
   let startedResolve;
@@ -163,7 +162,6 @@ test("controller enforces queue zero and supports cancellation without retry", a
 
   const first = request(controller, "meeting-busy");
   await started;
-  await assert.rejects(request(controller, "meeting-busy"), { code: "provider_busy" });
   assert.equal(controller.cancelRequest(), true);
   await assert.rejects(first, { code: "provider_request_aborted" });
   assert.equal(providerCalls, 1);
@@ -233,9 +231,6 @@ test("provider failure is sanitized and leaves transcription session context usa
   assert.equal(error.code, "provider_failure");
   assert.equal(error.message.includes("private"), false);
   assert.equal(calls, 1);
-  assert.deepEqual(controller.addFinalSegment({ speaker: "Speaker 2", text: "Transcription continues." }), {
-    revision: 1
-  });
   const status = await controller.getStatus();
   assert.equal(status.sessionActive, true);
   assert.equal(status.inFlight, false);
@@ -256,7 +251,27 @@ function readyController({ credentialStore, provider, sessionId, ...dependencies
 function request(controller, sessionId) {
   return controller.requestAssist({
     sessionId,
+    contextSnapshot: createContextSnapshot(sessionId),
     question: "What should I say?"
+  });
+}
+
+function createContextSnapshot(sessionId, revision = 1) {
+  const segment = Object.freeze({
+    id: "segment-1",
+    revision: 1,
+    start_ms: 1_000,
+    end_ms: 2_000,
+    track: "system",
+    text: "Friday is better.",
+    language: "en",
+    speaker_id: "speaker-1"
+  });
+  return Object.freeze({
+    sessionId,
+    revision,
+    transcriptChars: segment.text.length,
+    segments: Object.freeze([segment])
   });
 }
 
