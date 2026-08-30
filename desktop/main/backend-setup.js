@@ -5,11 +5,22 @@ import path from "node:path";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 32_768;
 const DEFAULT_TERMINATION_GRACE_MS = 250;
-const COMPONENT_IDS = Object.freeze([
+const SOURCE_COMPONENT_IDS = Object.freeze([
   "meeting_transcriber",
   "faster_whisper",
   "huggingface_hub",
   "sherpa_onnx"
+]);
+const BUNDLED_COMPONENT_IDS = Object.freeze([
+  "meeting_transcriber",
+  "faster_whisper",
+  "faster_whisper.utils",
+  "huggingface_hub",
+  "numpy",
+  "sherpa_onnx",
+  "ctranslate2",
+  "ctranslate2.converters",
+  "sentencepiece"
 ]);
 const COMPONENT_STATES = new Set(["ready", "missing", "broken"]);
 const PROBE_SENTINEL = "__MEETING_TRANSCRIBER_SETUP_V1__";
@@ -41,6 +52,8 @@ print("__MEETING_TRANSCRIBER_SETUP_V1__" + json.dumps({
 export class BackendSetupManager {
   constructor({
     backendRoot,
+    bundledSidecarPath = null,
+    allowSourceRuntime = true,
     env = process.env,
     fakeBackendPath,
     platform = process.platform,
@@ -51,6 +64,8 @@ export class BackendSetupManager {
     terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS
   } = {}) {
     this.backendRoot = backendRoot;
+    this.bundledSidecarPath = bundledSidecarPath;
+    this.allowSourceRuntime = allowSourceRuntime;
     this.env = env;
     this.fakeBackendPath = fakeBackendPath;
     this.platform = platform;
@@ -94,14 +109,16 @@ export class BackendSetupManager {
 
   getVerifiedLaunch() {
     if (!this.verifiedLaunch) return null;
-    return Object.freeze({
+    const launch = {
       command: this.verifiedLaunch.command,
       prefixArgs: Object.freeze([...this.verifiedLaunch.prefixArgs])
-    });
+    };
+    if (this.verifiedLaunch.kind === "sidecar") launch.kind = "sidecar";
+    return Object.freeze(launch);
   }
 
   async performCheck() {
-    if (this.env.MEETING_TRANSCRIBER_FAKE === "1") {
+    if (this.allowSourceRuntime && this.env.MEETING_TRANSCRIBER_FAKE === "1") {
       if (!this.fakeBackendPath || !this.pathExists(this.fakeBackendPath)) {
         return { result: createResult("resource_missing"), launch: null };
       }
@@ -109,6 +126,70 @@ export class BackendSetupManager {
         result: createResult("ready", null, createComponentStates("ready")),
         launch: { command: process.execPath, prefixArgs: [] }
       };
+    }
+
+    if (this.bundledSidecarPath) {
+      if (!this.pathExists(this.bundledSidecarPath)) {
+        return { result: createResult("resource_missing"), launch: null };
+      }
+      const probe = await runRuntimeProbe({
+        candidate: {
+          command: this.bundledSidecarPath,
+          prefixArgs: [],
+          missingOnNonzero: false
+        },
+        probeArgs: ["--setup-probe"],
+        backendRoot: this.backendRoot,
+        env: this.env,
+        spawnProcess: this.spawnProcess,
+        timeoutMs: this.timeoutMs,
+        maxOutputBytes: this.maxOutputBytes,
+        terminationGraceMs: this.terminationGraceMs
+      });
+      if (probe.kind === "termination_unconfirmed") {
+        this.guardUnconfirmedTermination(probe.closePromise);
+        return { result: createResult("check_failed"), launch: null };
+      }
+      if (probe.kind !== "result") {
+        return { result: createResult("check_failed"), launch: null };
+      }
+      const normalized = normalizeProbeResult(probe.value, {
+        componentIds: BUNDLED_COMPONENT_IDS,
+        requireExactComponents: true
+      });
+      if (!normalized) return { result: createResult("check_failed"), launch: null };
+      const { pythonVersion, versionParts, implementation, components } = normalized;
+      if (!isSupportedPython(versionParts, implementation)) {
+        return {
+          result: createResult("python_unsupported", pythonVersion, components),
+          launch: null
+        };
+      }
+      const componentValues = Object.values(components);
+      if (componentValues.includes("broken")) {
+        return {
+          result: createResult("components_broken", pythonVersion, components),
+          launch: null
+        };
+      }
+      if (componentValues.includes("missing")) {
+        return {
+          result: createResult("components_missing", pythonVersion, components),
+          launch: null
+        };
+      }
+      return {
+        result: createResult("ready", pythonVersion, components),
+        launch: {
+          kind: "sidecar",
+          command: this.bundledSidecarPath,
+          prefixArgs: []
+        }
+      };
+    }
+
+    if (!this.allowSourceRuntime) {
+      return { result: createResult("resource_missing"), launch: null };
     }
 
     if (!hasBackendResource(this.backendRoot, this.pathExists)) {
@@ -132,8 +213,9 @@ export class BackendSetupManager {
         break;
       }
 
-      const probe = await runPythonProbe({
+      const probe = await runRuntimeProbe({
         candidate,
+        probeArgs: [...candidate.prefixArgs, "-I", "-B", "-c", PROBE_SCRIPT],
         backendRoot: this.backendRoot,
         env: this.env,
         spawnProcess: this.spawnProcess,
@@ -233,8 +315,9 @@ function createPythonCandidates({ backendRoot, env, platform, pathExists }) {
   });
 }
 
-function runPythonProbe({
+function runRuntimeProbe({
   candidate,
+  probeArgs,
   backendRoot,
   env,
   spawnProcess,
@@ -247,7 +330,7 @@ function runPythonProbe({
     try {
       child = spawnProcess(
         candidate.command,
-        [...candidate.prefixArgs, "-I", "-B", "-c", PROBE_SCRIPT],
+        probeArgs,
         {
           cwd: backendRoot,
           env: createPythonEnvironment(backendRoot, env),
@@ -381,14 +464,28 @@ function parseProbeOutput(stdout) {
   return JSON.parse(payload);
 }
 
-function normalizeProbeResult(value) {
+function normalizeProbeResult(
+  value,
+  {
+    componentIds = SOURCE_COMPONENT_IDS,
+    requireExactComponents = false
+  } = {}
+) {
   if (!value || !Array.isArray(value.version) || value.version.length < 3) return null;
   const versionParts = value.version.slice(0, 3).map(Number);
   if (versionParts.some((part) => !Number.isSafeInteger(part) || part < 0)) return null;
   if (!value.components || typeof value.components !== "object" || Array.isArray(value.components)) return null;
+  if (requireExactComponents) {
+    const receivedIds = Object.keys(value.components);
+    const expectedIds = new Set(componentIds);
+    if (
+      receivedIds.length !== componentIds.length
+      || receivedIds.some((id) => !expectedIds.has(id))
+    ) return null;
+  }
 
   const components = {};
-  for (const id of COMPONENT_IDS) {
+  for (const id of componentIds) {
     const state = value.components[id];
     if (!COMPONENT_STATES.has(state)) return null;
     components[id] = state;
@@ -422,15 +519,17 @@ function createResult(state, pythonVersion = null, components = createComponentS
 }
 
 function createComponentStates(state) {
-  return Object.fromEntries(COMPONENT_IDS.map((id) => [id, state]));
+  return Object.fromEntries(SOURCE_COMPONENT_IDS.map((id) => [id, state]));
 }
 
 function freezeLaunch(launch) {
   if (!launch || typeof launch.command !== "string" || !Array.isArray(launch.prefixArgs)) return null;
-  return Object.freeze({
+  const frozen = {
     command: launch.command,
     prefixArgs: Object.freeze([...launch.prefixArgs])
-  });
+  };
+  if (launch.kind === "sidecar") frozen.kind = "sidecar";
+  return Object.freeze(frozen);
 }
 
 function normalizePositiveInteger(value, fallback) {

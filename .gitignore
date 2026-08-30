@@ -2,6 +2,9 @@ node_modules/
 dist/
 out/
 release/
+build/sidecar/
+build/pyinstaller/
+build/compliance/
 
 backend/.venv/
 .venv/
@@ -26,4 +29,3 @@ artifacts/
 .DS_Store
 Thumbs.db
 *.log
-

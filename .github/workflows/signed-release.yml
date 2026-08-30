@@ -1,0 +1,80 @@
+name: Build signed installers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-x64
+          - runner: macos-15
+            target: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: 3.12.10
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare backend on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/Scripts/python.exe -m pip install --disable-pip-version-check --constraint backend/constraints.txt --editable backend
+      - name: Prepare backend on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --disable-pip-version-check --constraint backend/constraints.txt --editable backend
+      - name: Build signed and notarized distribution
+        env:
+          MEETING_TRANSCRIBER_REQUIRE_PYTHON_PATCH: 3.12.10
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+        run: pnpm run dist:signed
+      - name: Verify Authenticode
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $targets = Get-ChildItem dist -Recurse -File | Where-Object Extension -In '.exe', '.dll', '.pyd'
+          if (-not $targets) { throw 'No Windows signing targets were produced.' }
+          foreach ($target in $targets) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $target.FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature: $($target.Name)" }
+          }
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app_path="$(find dist -maxdepth 3 -name 'Meeting Transcriber.app' -print -quit)"
+          test -n "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: meeting-transcriber-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+

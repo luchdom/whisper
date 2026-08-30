@@ -88,7 +88,19 @@ const applicationIcon = path.join(projectRoot, "desktop", "build", "icon.png");
 const backendRoot = app.isPackaged
   ? path.join(process.resourcesPath, "backend")
   : path.join(projectRoot, "backend");
+const bundledSidecarPath = app.isPackaged
+  ? path.join(
+      process.resourcesPath,
+      "sidecar",
+      process.platform === "win32"
+        ? "meeting-transcriber-sidecar.exe"
+        : "meeting-transcriber-sidecar"
+    )
+  : null;
 const fakeBackendPath = path.join(projectRoot, "desktop", "test", "fake-backend.js");
+const backendEnvironment = app.isPackaged
+  ? stripPackagedBackendOverrides(process.env)
+  : process.env;
 const modelManifestPath = path.join(backendRoot, "src", "meeting_transcriber", "model_manifest.json");
 // Python 3.12.10 is the last 3.12 release with official Windows and macOS
 // binary installers. Newer Python series are intentionally rejected until the
@@ -164,12 +176,31 @@ let meetingInProgress = false;
 let successfulStop = false;
 let lastSessionStopReason = null;
 
-const backendSetup = new BackendSetupManager({ backendRoot, fakeBackendPath });
+const backendSetup = new BackendSetupManager({
+  backendRoot,
+  bundledSidecarPath,
+  allowSourceRuntime: !app.isPackaged,
+  env: backendEnvironment,
+  fakeBackendPath
+});
 const backend = new BackendController({
   backendRoot,
+  env: backendEnvironment,
   fakeBackendPath,
   getVerifiedLaunch: () => backendSetup.getVerifiedLaunch()
 });
+
+function stripPackagedBackendOverrides(environment) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (new Set([
+      "MEETING_TRANSCRIBER_FAKE",
+      "MEETING_TRANSCRIBER_PYTHON"
+    ]).has(key.toUpperCase())) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
 const transcriptFiles = createTranscriptFileService();
 const debriefContext = new DebriefContextBuffer();
 const closeCoordinator = createCloseCoordinator(closeWindowSafely);

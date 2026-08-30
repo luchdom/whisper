@@ -1,8 +1,22 @@
 # Third-party notices
 
-Meeting Transcriber uses open-source runtime libraries listed in `package.json` and `backend/pyproject.toml`. Their package distributions include their respective license metadata.
+Meeting Transcriber uses open-source runtime libraries listed in `package.json` and `backend/pyproject.toml`. Their package distributions include their respective license metadata. Standalone distributions also include a CycloneDX `SBOM.cdx.json` generated from the runtime packages observed in that platform's PyInstaller analysis.
 
-The repository bundles a schema-v1 integrity manifest, not model artifacts. ASR, speaker, and translation source artifacts are downloaded on demand from the sources below only when the user starts a feature that needs them. The current developer package does not redistribute those models.
+The repository bundles a schema-v1 integrity manifest, not model artifacts. ASR, speaker, and translation source artifacts are downloaded on demand from the sources below only when the user starts a feature that needs them. Standalone installers do not redistribute those models.
+
+## Standalone application runtime
+
+Platform distributions bundle these major runtime families. The SBOM explicitly records the embedded CPython version and the versions of observed packaged dependencies. Build-environment tools are recorded separately and are not labeled as required runtime dependencies. Transitive Python inputs are platform-resolved rather than an immutable cross-platform lock.
+
+- CPython 3.12.x — Python Software Foundation License Version 2.
+- PyInstaller bootloader — GNU General Public License Version 2 or later with the PyInstaller bootloader exception, which permits distribution with the bundled application.
+- Electron — MIT License; its embedded Chromium and Node.js distributions carry their upstream BSD-style and MIT notices.
+- Faster-Whisper and CTranslate2 — MIT License.
+- Hugging Face Hub, SentencePiece, Sherpa-ONNX, FlatBuffers, and Tokenizers — Apache License 2.0.
+- ONNX Runtime — MIT License.
+- NumPy and PyAV — BSD 3-Clause licenses.
+
+The installed runtime contains no package manager and never modifies system Python. Model licenses and attribution remain separate below because model files are provisioned only after an explicit feature start.
 
 ## Faster-Whisper ASR artifacts
 

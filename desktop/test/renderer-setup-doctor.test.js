@@ -40,6 +40,9 @@ test("setup readiness fails closed and remediation stays state-specific", async 
   assert.match(app, /\["components_missing", "components_broken"\]\.includes\(engineSetup\.state\)[^]*?engineSetup\.sourceSetupAvailable/);
   assert.match(app, /bridge\.openPythonDownloadPage\(\)/);
   assert.match(app, /bridge\.copyBootstrapCommand\(\)/);
+  assert.match(app, /This installed app does not use system Python\. Repair or reinstall the app/);
+  assert.match(app, /The bundled runtime is incomplete/);
+  assert.match(app, /python_unsupported"\]\.includes\(engineSetup\.state\)[^]*?engineSetup\.sourceSetupAvailable/);
   assert.doesNotMatch(app, /https?:\/\//);
 });
 

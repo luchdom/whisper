@@ -12,6 +12,17 @@ const READY_COMPONENTS = Object.freeze({
   huggingface_hub: "ready",
   sherpa_onnx: "ready"
 });
+const BUNDLED_READY_COMPONENTS = Object.freeze({
+  meeting_transcriber: "ready",
+  faster_whisper: "ready",
+  "faster_whisper.utils": "ready",
+  huggingface_hub: "ready",
+  numpy: "ready",
+  sherpa_onnx: "ready",
+  ctranslate2: "ready",
+  "ctranslate2.converters": "ready",
+  sentencepiece: "ready"
+});
 
 test("fake mode is ready without probing Python or model providers", async () => {
   let spawnCount = 0;
@@ -43,6 +54,107 @@ test("fake mode fails closed when its configured sidecar resource is missing", a
     backendRoot,
     fakeBackendPath: path.resolve("desktop/test/missing-fake-backend.js"),
     env: { MEETING_TRANSCRIBER_FAKE: "1" },
+    spawnProcess: () => {
+      spawnCount += 1;
+      throw new Error("must not spawn");
+    }
+  });
+
+  const result = await manager.check();
+
+  assert.equal(result.state, "resource_missing");
+  assert.equal(spawnCount, 0);
+  assert.equal(manager.getVerifiedLaunch(), null);
+});
+
+test("an installed build verifies and selects only its bundled sidecar", async () => {
+  const bundledSidecarPath = path.resolve(
+    "resources/sidecar/meeting-transcriber-sidecar.exe"
+  );
+  const mock = createSpawnMock(() => ({ stdout: bundledProbePayload() }));
+  const manager = new BackendSetupManager({
+    backendRoot,
+    bundledSidecarPath,
+    allowSourceRuntime: false,
+    env: {
+      MEETING_TRANSCRIBER_FAKE: "1",
+      MEETING_TRANSCRIBER_PYTHON: "must-not-run"
+    },
+    pathExists: (candidate) => candidate === bundledSidecarPath,
+    spawnProcess: mock.spawn
+  });
+
+  const result = await manager.check();
+
+  assert.equal(result.state, "ready");
+  assert.equal(mock.calls.length, 1);
+  assert.equal(mock.calls[0].command, bundledSidecarPath);
+  assert.deepEqual(mock.calls[0].args, ["--setup-probe"]);
+  assert.equal(mock.calls[0].options.shell, false);
+  assert.deepEqual(manager.getVerifiedLaunch(), {
+    kind: "sidecar",
+    command: bundledSidecarPath,
+    prefixArgs: []
+  });
+});
+
+test("an installed build preserves every bundled component and rejects broken translation", async () => {
+  const bundledSidecarPath = path.resolve(
+    "resources/sidecar/meeting-transcriber-sidecar.exe"
+  );
+  const components = { ...BUNDLED_READY_COMPONENTS, sentencepiece: "broken" };
+  const mock = createSpawnMock(() => ({
+    stdout: bundledProbePayload({ components })
+  }));
+  const manager = new BackendSetupManager({
+    backendRoot,
+    bundledSidecarPath,
+    allowSourceRuntime: false,
+    env: {},
+    pathExists: (candidate) => candidate === bundledSidecarPath,
+    spawnProcess: mock.spawn
+  });
+
+  const result = await manager.check();
+
+  assert.equal(result.state, "components_broken");
+  assert.deepEqual(result.components, components);
+  assert.deepEqual(Object.keys(result.components), Object.keys(BUNDLED_READY_COMPONENTS));
+  assert.equal(manager.getVerifiedLaunch(), null);
+});
+
+test("an installed build rejects an incomplete bundled component schema", async () => {
+  const bundledSidecarPath = path.resolve(
+    "resources/sidecar/meeting-transcriber-sidecar.exe"
+  );
+  const components = { ...BUNDLED_READY_COMPONENTS };
+  delete components["ctranslate2.converters"];
+  const mock = createSpawnMock(() => ({
+    stdout: bundledProbePayload({ components })
+  }));
+  const manager = new BackendSetupManager({
+    backendRoot,
+    bundledSidecarPath,
+    allowSourceRuntime: false,
+    env: {},
+    pathExists: (candidate) => candidate === bundledSidecarPath,
+    spawnProcess: mock.spawn
+  });
+
+  const result = await manager.check();
+
+  assert.equal(result.state, "check_failed");
+  assert.equal(manager.getVerifiedLaunch(), null);
+});
+
+test("an installed build fails closed when the bundled sidecar is absent", async () => {
+  let spawnCount = 0;
+  const manager = new BackendSetupManager({
+    backendRoot,
+    bundledSidecarPath: path.resolve("resources/sidecar/missing-sidecar.exe"),
+    allowSourceRuntime: false,
+    env: { MEETING_TRANSCRIBER_PYTHON: "must-not-run" },
+    pathExists: () => false,
     spawnProcess: () => {
       spawnCount += 1;
       throw new Error("must not spawn");
@@ -345,6 +457,14 @@ function probePayload({
     implementation,
     components
   })}`;
+}
+
+function bundledProbePayload({
+  version = [3, 12, 0],
+  implementation = "cpython",
+  components = BUNDLED_READY_COMPONENTS
+} = {}) {
+  return probePayload({ version, implementation, components });
 }
 
 function createSpawnMock(resolveOutcome) {

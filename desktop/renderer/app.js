@@ -2641,7 +2641,9 @@ function describeEngineSetup() {
     },
     ready: {
       title: "Local engine is ready",
-      message: engineSetup.python.version
+      message: !sourceSetup
+        ? "The bundled local runtime and all required components are available."
+        : engineSetup.python.version
         ? `Python ${engineSetup.python.version} and all required components are available.`
         : "All required local engine components are available.",
       summary: "Ready",
@@ -2650,19 +2652,23 @@ function describeEngineSetup() {
       mainDot: "neutral"
     },
     python_missing: {
-      title: "Python isn't installed",
-      message: `${pythonLabel} is required. Install it, then return here and check again.`,
-      summary: "Python required",
+      title: sourceSetup ? "Python isn't installed" : "Bundled runtime is unavailable",
+      message: sourceSetup
+        ? `${pythonLabel} is required. Install it, then return here and check again.`
+        : "This installed app does not use system Python. Repair or reinstall the app, then check again.",
+      summary: sourceSetup ? "Python required" : "Repair required",
       summaryState: "warning",
       mainStatus: "Local engine needs setup",
       mainDot: "working"
     },
     python_unsupported: {
-      title: "Python version isn't supported",
-      message: engineSetup.python.version
+      title: sourceSetup ? "Python version isn't supported" : "Bundled runtime isn't supported",
+      message: !sourceSetup
+        ? "This installed app does not use system Python. Install a current app release, then check again."
+        : engineSetup.python.version
         ? `Python ${engineSetup.python.version} was found. This app currently supports ${pythonLabel}. Install it, then check again.`
         : `This app currently supports ${pythonLabel}. Install it, then check again.`,
-      summary: "Unsupported Python",
+      summary: sourceSetup ? "Unsupported Python" : "Update required",
       summaryState: "warning",
       mainStatus: "Local engine needs setup",
       mainDot: "working"
@@ -2671,7 +2677,7 @@ function describeEngineSetup() {
       title: "Engine components are missing",
       message: sourceSetup
         ? `This source checkout is missing ${problemComponents}. Copy and run the setup command, then check again.`
-        : `This developer build does not bundle a standalone local runtime yet. Unavailable components: ${problemComponents}. Use a source checkout and its bootstrap script.`,
+        : `The bundled runtime is incomplete. Unavailable components: ${problemComponents}. Repair or reinstall the app, then check again.`,
       summary: "Setup required",
       summaryState: "warning",
       mainStatus: "Local engine needs setup",
@@ -2681,7 +2687,7 @@ function describeEngineSetup() {
       title: "Engine components need repair",
       message: sourceSetup
         ? `${problemComponents} could not be loaded. Copy and run the setup command to repair the source checkout, then check again.`
-        : `${problemComponents} could not be loaded, and this developer build cannot repair its runtime. Use a source checkout and its bootstrap script.`,
+        : `${problemComponents} could not be loaded from the bundled runtime. Repair or reinstall the app, then check again.`,
       summary: "Repair required",
       summaryState: "warning",
       mainStatus: "Local engine needs setup",
@@ -2697,7 +2703,9 @@ function describeEngineSetup() {
     },
     check_failed: {
       title: "Local engine check failed",
-      message: "The app could not verify the local engine. Try again. If this continues, restart the app.",
+      message: sourceSetup
+        ? "The app could not verify the local engine. Try again. If this continues, restart the app."
+        : "The app could not verify its bundled runtime. Try again. If this continues, repair or reinstall the app.",
       summary: "Check failed",
       summaryState: "error",
       mainStatus: "Local engine unavailable",
@@ -2732,7 +2740,8 @@ function formatProblemComponents(setupState) {
 
 function renderEngineSetup() {
   const display = describeEngineSetup();
-  const pythonProblem = ["python_missing", "python_unsupported"].includes(engineSetup.state);
+  const pythonProblem = ["python_missing", "python_unsupported"].includes(engineSetup.state)
+    && engineSetup.sourceSetupAvailable;
   const sourceComponentProblem = ["components_missing", "components_broken"].includes(engineSetup.state)
     && engineSetup.sourceSetupAvailable;
   const locked = state.active || setupActionBusy;

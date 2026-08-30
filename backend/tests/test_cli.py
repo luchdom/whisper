@@ -6,12 +6,29 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from meeting_transcriber.cli import configure_standard_streams_utf8
+from meeting_transcriber.cli import (
+    SETUP_COMPONENTS,
+    build_setup_probe,
+    configure_standard_streams_utf8,
+)
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_SETUP_COMPONENTS = {
+    "meeting_transcriber",
+    "faster_whisper",
+    "faster_whisper.utils",
+    "huggingface_hub",
+    "numpy",
+    "sherpa_onnx",
+    "ctranslate2",
+    "ctranslate2.converters",
+    "sentencepiece",
+}
 
 
 class CliTests(unittest.TestCase):
@@ -57,6 +74,64 @@ class CliTests(unittest.TestCase):
         self.assertEqual(events[0]["code"], "unknown_command")
         self.assertEqual(events[-1]["status"], "shutdown")
         self.assertNotIn(phrase.encode("utf-8"), completed.stderr)
+
+    def test_setup_probe_reports_the_embedded_runtime_without_starting_jsonl(self) -> None:
+        environment = os.environ.copy()
+        existing_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = str(BACKEND_ROOT / "src") + (
+            os.pathsep + existing_pythonpath if existing_pythonpath else ""
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "meeting_transcriber", "--setup-probe"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=BACKEND_ROOT,
+            env=environment,
+            check=False,
+            timeout=20,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", errors="replace"))
+        output = completed.stdout.decode("utf-8", errors="strict").strip()
+        sentinel = "__MEETING_TRANSCRIBER_SETUP_V1__"
+        self.assertTrue(output.startswith(sentinel))
+        payload = json.loads(output[len(sentinel) :])
+        self.assertEqual(payload["version"][:2], [3, 12])
+        self.assertEqual(payload["implementation"], "cpython")
+        self.assertEqual(set(payload["components"]), EXPECTED_SETUP_COMPONENTS)
+        self.assertEqual(payload["components"], dict.fromkeys(EXPECTED_SETUP_COMPONENTS, "ready"))
+
+    def test_setup_probe_marks_missing_modules_and_missing_lazy_symbols(self) -> None:
+        modules = {
+            name: SimpleNamespace(**{symbol: object() for symbol in required_symbols})
+            for name, required_symbols in SETUP_COMPONENTS.items()
+        }
+        del modules["sentencepiece"].SentencePieceProcessor
+
+        with (
+            patch(
+                "meeting_transcriber.cli.importlib.util.find_spec",
+                side_effect=lambda name: None if name == "huggingface_hub" else object(),
+            ),
+            patch(
+                "meeting_transcriber.cli.importlib.import_module",
+                side_effect=lambda name: modules[name],
+            ),
+        ):
+            payload = build_setup_probe()
+
+        components = payload["components"]
+        self.assertEqual(set(components), EXPECTED_SETUP_COMPONENTS)
+        self.assertEqual(components["huggingface_hub"], "missing")
+        self.assertEqual(components["sentencepiece"], "broken")
+        self.assertTrue(
+            all(
+                status == "ready"
+                for name, status in components.items()
+                if name not in {"huggingface_hub", "sentencepiece"}
+            )
+        )
 
 
 if __name__ == "__main__":

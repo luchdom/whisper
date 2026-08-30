@@ -70,6 +70,29 @@ test("a verified launcher preserves isolation flags and strips Python environmen
   assert.equal(launch.env.PYTHONUTF8, "1");
 });
 
+test("a verified bundled sidecar launches directly without Python module arguments", () => {
+  const launch = resolveLaunch({
+    backendRoot: path.resolve("backend"),
+    fakeBackendPath: null,
+    env: {
+      PATH: "safe-path",
+      PYTHONHOME: "private-home",
+      PIP_INDEX_URL: "https://token@example.invalid"
+    },
+    verifiedLaunch: {
+      kind: "sidecar",
+      command: path.resolve("resources/sidecar/meeting-transcriber-sidecar.exe"),
+      prefixArgs: []
+    }
+  });
+
+  assert.equal(launch.command.endsWith("meeting-transcriber-sidecar.exe"), true);
+  assert.deepEqual(launch.args, []);
+  assert.equal(launch.env.PATH, "safe-path");
+  assert.equal(launch.env.PYTHONHOME, undefined);
+  assert.equal(launch.env.PIP_INDEX_URL, undefined);
+});
+
 test("the controller launches only the verified runtime without a shell", async () => {
   let invocation;
   const controller = new BackendController({

@@ -23,6 +23,12 @@ bash ./scripts/bootstrap.sh
 
 The bootstrap creates or reuses `backend/.venv`, installs the editable backend under the direct dependency pins in `constraints.txt`, verifies the environment without loading a model, and prepares the desktop dependencies. It never installs Python or changes global Python packages. If Python is missing, use the signed installer on the official [Python 3.12.10 release page](https://www.python.org/downloads/release/python-31210/) and rerun the bootstrap from a new terminal.
 
+## Standalone sidecar
+
+Desktop distributions do not run this source tree. `pnpm run build:sidecar` installs the exact build-only versions in `packaging/requirements-build.txt` into the project virtual environment, then uses PyInstaller `onedir` mode to bundle CPython and the native inference dependencies for the current OS and architecture. `packaging/sidecar_entry.py` preserves the same stdin/stdout JSONL protocol.
+
+The hidden `--setup-probe` command imports the required runtime components and returns only the existing version/component sentinel. It does not load or download a model, inspect meeting content, or start the JSONL loop. The build script requires that probe and a real JSONL shutdown smoke to pass before Electron packaging. Installed desktop builds launch only the bundled executable and never fall back to system Python; source mode continues to use the bootstrap behavior above. See [../docs/DISTRIBUTION.md](../docs/DISTRIBUTION.md) for signing and clean-machine release gates.
+
 For sidecar-only development, the equivalent manual commands are below.
 
 Windows PowerShell:

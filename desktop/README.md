@@ -172,7 +172,9 @@ Open **Settings > Local engine** to run the side-effect-free doctor. **Checking 
 - **Copy setup command** is available only when running from a source checkout whose engine components are missing or broken. Run it in a terminal from the repository root.
 - **Check again** reruns the doctor after setup or repair. The non-ready main action **Open setup** takes you to this card.
 
-This is still a developer setup. `pnpm run pack` and `pnpm run dist` include backend source and constraints, but not Python, native Python dependencies, the source bootstrap scripts, or Whisper models. Their output is not a standalone clean-machine installer. A standalone release still requires a bundled and signed platform-specific runtime plus clean-machine Windows and macOS validation.
+This source setup remains available for contributors. `pnpm run pack` and `pnpm run dist` now create a platform-specific PyInstaller `onedir` runtime, include it as an Electron resource, and generate a CycloneDX SBOM. Installed builds verify and launch only that bundled sidecar; they do not use a system Python or show source-bootstrap remediation. Models remain on-demand and integrity-verified instead of being bundled.
+
+Those ordinary packaging commands produce unsigned developer artifacts. `pnpm run dist:signed` requires platform signing credentials and fails closed without them; macOS additionally requires notarization credentials. Clean-machine install, same-version repair/reinstall, upgrade, uninstall, Gatekeeper/SmartScreen, and actual macOS hardware behavior remain explicit release gates documented in `docs/DISTRIBUTION.md`.
 
 ## Deterministic UI mode
 

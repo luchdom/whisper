@@ -449,6 +449,13 @@ export function resolveLaunch({ backendRoot, env, fakeBackendPath, verifiedLaunc
 
   if (verifiedLaunch) {
     const descriptor = normalizeLaunchDescriptor(verifiedLaunch);
+    if (descriptor.kind === "sidecar") {
+      return {
+        command: descriptor.command,
+        args: [...descriptor.prefixArgs],
+        env: createVerifiedPythonEnvironment(env)
+      };
+    }
     const prefixArgs = [...descriptor.prefixArgs];
     if (!prefixArgs.includes("-I")) prefixArgs.push("-I");
     if (!prefixArgs.includes("-B")) prefixArgs.push("-B");
@@ -491,7 +498,11 @@ function normalizeLaunchDescriptor(value) {
   if (!Array.isArray(value.prefixArgs) || value.prefixArgs.some((item) => typeof item !== "string")) {
     throw new Error("The verified local runtime is invalid.");
   }
-  return { command: value.command, prefixArgs: [...value.prefixArgs] };
+  const kind = value.kind ?? "python";
+  if (!new Set(["python", "sidecar"]).has(kind)) {
+    throw new Error("The verified local runtime is invalid.");
+  }
+  return { kind, command: value.command, prefixArgs: [...value.prefixArgs] };
 }
 
 function createVerifiedPythonEnvironment(env) {
