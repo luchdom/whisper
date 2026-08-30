@@ -4,7 +4,7 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
-Current source release: **v0.7.0**.
+Current source release: **v0.9.0**.
 
 ## Requirements
 
@@ -239,6 +239,8 @@ Open **Settings** to choose a default transcript folder. The native directory pi
 
 The app remains usable with only one source selected. If a selected input is denied, unavailable, or interrupted, capture stops and the UI provides a recovery message rather than silently continuing with incomplete audio.
 
+The same fail-closed rule now covers a source that never emits or later stalls, a track muted beyond the bounded grace period, a suspended audio context, operating-system suspend/resume, and a failed main renderer. Main cancels Assist/provider work, stops the backend, marks retained debrief context incomplete, clears current autosave ownership, and keeps the tray/overlay in an error state until a fresh explicit Start. Overlay-renderer failure receives one bounded reload attempt without changing meeting capture. Deterministic tests cover the coordinator and races; native sleep/wake and crash behavior remain acceptance gates.
+
 ## Privacy boundary
 
 - Capture starts only after the visible start action and stops before backend finalization.
@@ -261,7 +263,12 @@ The app remains usable with only one source selected. If a selected input is den
 pnpm test
 pnpm run check
 pnpm run pack
+pnpm run test:desktop-soak:contract
+pnpm run test:safe-storage:windows
+pnpm run test:overlay-capture:plan:windows
 ```
+
+The safe-storage command is a real Windows Electron/DPAPI smoke using disposable synthetic canaries. The desktop-soak contract and overlay plan commands validate harness behavior only; complete release evidence requires the operator-driven native runs described in [DESKTOP-SOAK.md](../docs/DESKTOP-SOAK.md) and [OVERLAY_CAPTURE_ACCEPTANCE.md](../docs/OVERLAY_CAPTURE_ACCEPTANCE.md).
 
 The unit and contract suites cover streaming resampling and packet timing, transcript revision reconciliation, anonymous-speaker aliases and Markdown export, backend protocol validation, settings allowlists and atomic persistence, tray state/actions/timing, Windows and macOS login-item policy, close/minimize policy, main-owned transcript files, platform gating, backend launch selection, session state transitions, immutable meeting-profile selection, encrypted context-pack revisions and limits, content-free request previews, finalized-context replacement/bounds, Assist protocol identity, provider cancellation/backpressure, consent boundaries, renderer stale-result isolation, the three-region responsive workspace, per-start permission dialog, overlay state/projection bounds, persisted-settings schema, independent shortcut registration/retry/reset, IPC/window hardening, display recovery, debrief session lifecycle and revision replacement, deterministic extraction and evidence limits, renderer edit/provenance rules, source validation, independent clear actions, and bounded copy/export.
 

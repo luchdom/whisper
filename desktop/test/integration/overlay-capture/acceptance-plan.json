@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "synthetic-overlay-pair-v1",
+  "steps": [
+    {
+      "id": "local-desktop-pair",
+      "category": "fixture",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "both-visible",
+      "instruction": "On the local desktop, confirm that the blue BASELINE window and magenta PRIVATE window are both readable over the synthetic test card."
+    },
+    {
+      "id": "windows-screenshot",
+      "category": "capture-surface",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "Use Windows Snipping Tool or Print Screen on the fixture display. Inspect only the local preview, then delete the image without saving or uploading it."
+    },
+    {
+      "id": "obs-display-capture",
+      "category": "capture-surface",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "In OBS, preview a Display Capture of the fixture display. Do not stream or retain a recording."
+    },
+    {
+      "id": "zoom-screen-share",
+      "category": "meeting-client",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "In a synthetic Zoom test meeting, share the fixture display and inspect the recipient view. Do not use a work meeting or real participant data."
+    },
+    {
+      "id": "google-meet-screen-share",
+      "category": "meeting-client",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "In a synthetic Google Meet test room, share the fixture display from the supported browser and inspect the recipient view."
+    },
+    {
+      "id": "microsoft-teams-screen-share",
+      "category": "meeting-client",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "In a synthetic Microsoft Teams test meeting, share the fixture display and inspect the recipient view."
+    },
+    {
+      "id": "webex-screen-share",
+      "category": "meeting-client",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "In a synthetic Webex test meeting, share the fixture display and inspect the recipient view."
+    },
+    {
+      "id": "focus-and-recovery",
+      "category": "window-behavior",
+      "required": true,
+      "responseType": "binary",
+      "expected": "pass",
+      "instruction": "Move focus among the capture client, test card, baseline window, and private window. Confirm that all remain reachable and that the fixture never takes focus back by itself."
+    },
+    {
+      "id": "primary-monitor-standard-scale",
+      "category": "display",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "With the fixture on the primary monitor at its normal scale, inspect a full-display capture preview."
+    },
+    {
+      "id": "secondary-monitor-mixed-dpi",
+      "category": "display",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "Move all three fixture windows to a second monitor with a different scale or DPI, then inspect a full-display capture preview. If this hardware is unavailable, record not-run; the gate remains incomplete."
+    },
+    {
+      "id": "fullscreen-presentation",
+      "category": "display",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "Place synthetic content in full-screen presentation mode while the two fixture windows remain locally visible, then inspect the shared-display preview."
+    },
+    {
+      "id": "sleep-resume",
+      "category": "lifecycle",
+      "required": true,
+      "responseType": "visual-pair",
+      "expected": "baseline-only",
+      "instruction": "While a local capture preview is active, sleep and resume Windows. Confirm both fixture windows return locally, then inspect the restarted capture preview."
+    },
+    {
+      "id": "forced-exit-cleanup",
+      "category": "lifecycle",
+      "required": true,
+      "responseType": "binary",
+      "expected": "pass",
+      "action": "stop-fixture",
+      "instruction": "Leave a capture preview open. The harness will terminate its fixture process. Confirm both synthetic windows disappear and the capture client remains under operator control."
+    },
+    {
+      "id": "privacy-artifact-cleanup",
+      "category": "privacy",
+      "required": true,
+      "responseType": "cleanup",
+      "expected": "confirmed",
+      "instruction": "Delete every screenshot, local recording, cloud recording, and test-room artifact created during this run. Keep only the content-free JSON manifest in the OS temporary directory."
+    }
+  ]
+}

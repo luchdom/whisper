@@ -8,6 +8,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   safeStorage,
   screen,
   session,
@@ -75,6 +76,10 @@ import {
   DEBRIEF_SECTION_IDS,
   extractLocalDebrief
 } from "./debrief-extractor.js";
+import {
+  RuntimeLifecycleError,
+  createRuntimeLifecycleCoordinator
+} from "./runtime-lifecycle.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDirectory, "..", "..");
@@ -139,6 +144,7 @@ const PUBLIC_ERROR_MESSAGES = new Set([
   "The local transcription process could not start.",
   "The local transcription process is still shutting down.",
   "The local transcription process stopped.",
+  "The meeting start was canceled after a system interruption.",
   "The selected language is not supported.",
   "The selected model is not supported.",
   "The selected translation mode is unavailable in this build.",
@@ -150,7 +156,8 @@ const PUBLIC_ERROR_MESSAGES = new Set([
   "The window close behavior is invalid.",
   "Launch at sign-in is available in an installed Windows or macOS app.",
   "Transcription settings are invalid.",
-  "Transcription settings contain an unsupported field."
+  "Transcription settings contain an unsupported field.",
+  "Wait for runtime cleanup to finish before starting a new meeting."
 ]);
 
 let mainWindow = null;
@@ -205,6 +212,17 @@ const transcriptFiles = createTranscriptFileService();
 const debriefContext = new DebriefContextBuffer();
 const closeCoordinator = createCloseCoordinator(closeWindowSafely);
 const closeReadyGate = createCloseReadyGate({ timeoutMs: RENDERER_CLOSE_READY_TIMEOUT_MS });
+const runtimeLifecycle = createRuntimeLifecycleCoordinator({
+  isMeetingActive: () => meetingInProgress
+    || ["starting", "stopping", "ready"].includes(backend.sessionState),
+  cancelAssist: () => assistController?.cancel("session_reset"),
+  cancelProvider: () => providerController?.cancelRequest(),
+  stopActiveMeeting: stopMeetingAfterRuntimeInterruption,
+  clearTransientState: clearInterruptedRuntimeState,
+  publishInterruptedState: publishInterruptedRuntimeState,
+  recoverMainRenderer: recoverMainRendererAfterInterruption,
+  recoverOverlayRenderer: recoverOverlayRendererAfterFailure
+});
 
 backend.on("event", (event) => {
   if (event.type === "final_segment") {
@@ -247,16 +265,20 @@ function createWindow() {
       devTools: !app.isPackaged
     }
   });
+  const createdWindow = mainWindow;
+  runtimeLifecycle.bindMainWindow(createdWindow);
 
-  mainWindow.once("ready-to-show", () => {
+  createdWindow.once("ready-to-show", () => {
+    if (mainWindow !== createdWindow) return;
     const pending = takePendingWindowShow();
     if (!startHidden || pending) revealMainWindow(pending ?? {});
   });
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
+  createdWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  createdWindow.webContents.on("will-navigate", (event, navigationUrl) => {
     if (navigationUrl !== rendererUrl) event.preventDefault();
   });
-  mainWindow.on("close", (event) => {
+  createdWindow.on("close", (event) => {
+    if (mainWindow !== createdWindow) return;
     if (allowWindowClose) return;
     event.preventDefault();
     const action = getWindowCloseAction({
@@ -269,16 +291,17 @@ function createWindow() {
     }
     requestApplicationQuit();
   });
-  mainWindow.on("minimize", (event) => {
+  createdWindow.on("minimize", (event) => {
+    if (mainWindow !== createdWindow) return;
     if (getWindowMinimizeAction(settings) !== "hide") return;
     event.preventDefault();
     mainWindow?.hide();
   });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
+  createdWindow.on("closed", () => {
+    if (mainWindow === createdWindow) mainWindow = null;
   });
-  void mainWindow.loadFile(rendererEntry);
-  return mainWindow;
+  void createdWindow.loadFile(rendererEntry);
+  return createdWindow;
 }
 
 function showMainWindow({ focusStart = false, focusAssist = false } = {}) {
@@ -393,7 +416,7 @@ async function createOverlayBoundary() {
     userDataPath: app.getPath("userData")
   });
   overlayController = createOverlayController({
-    BrowserWindow,
+    BrowserWindow: RuntimeAwareOverlayWindow,
     screen,
     platform: process.platform,
     rendererEntry: overlayRendererEntry,
@@ -409,6 +432,12 @@ async function createOverlayBoundary() {
   });
   await overlayController.initialize();
   await refreshOverlayProviderState();
+}
+
+function RuntimeAwareOverlayWindow(options) {
+  const window = new BrowserWindow(options);
+  runtimeLifecycle.bindOverlayWindow(window);
+  return window;
 }
 
 function createShortcutBoundary() {
@@ -602,6 +631,7 @@ async function closeWindowSafely({ shouldQuit }) {
         successfulStop = false;
         lastSessionStopReason = null;
         transcriptFiles.resetCurrentAutoSavePath();
+        runtimeLifecycle.finishCapture();
       }
     },
     shutdownBackend: () => backend.shutdown(),
@@ -614,6 +644,74 @@ async function closeWindowSafely({ shouldQuit }) {
     },
     forceExit: (code) => app.exit(code)
   });
+}
+
+async function stopMeetingAfterRuntimeInterruption({ reason }) {
+  const debriefSessionId = getLocalDebriefSessionId();
+  // Mark the retained debrief incomplete before the backend's normal stop
+  // event can label the same session complete.
+  finalizeLocalDebriefSession(debriefSessionId, reason);
+  await backend.stopSession();
+}
+
+async function clearInterruptedRuntimeState({ reason }) {
+  const assistSessionId = assistController?.getContextSnapshot()?.sessionId;
+  endAssistSession(assistSessionId);
+  meetingInProgress = false;
+  successfulStop = false;
+  lastSessionStopReason = reason;
+  transcriptFiles.resetCurrentAutoSavePath();
+  overlayController?.setMeetingState("stopped");
+  runtimeLifecycle.finishCapture();
+}
+
+function publishInterruptedRuntimeState() {
+  trayController?.setState("error");
+  overlayController?.setMeetingState("error");
+}
+
+function recoverMainRendererAfterInterruption() {
+  if (quitRequested || allowWindowClose) return false;
+  const failedWindow = mainWindow;
+  if (!failedWindow || failedWindow.isDestroyed()) {
+    showMainWindow();
+    return true;
+  }
+
+  const contents = failedWindow.webContents;
+  if (contents?.isDestroyed?.()) {
+    mainWindow = null;
+    createWindow();
+    if (!failedWindow.isDestroyed()) failedWindow.destroy();
+    showMainWindow();
+    return true;
+  }
+
+  if (failedWindow.isMinimized()) failedWindow.restore();
+  failedWindow.show();
+  if (typeof contents.reloadIgnoringCache === "function") contents.reloadIgnoringCache();
+  else if (typeof contents.reload === "function") contents.reload();
+  else return false;
+  return true;
+}
+
+function recoverOverlayRendererAfterFailure(window) {
+  if (!window || window.isDestroyed()) return false;
+  const contents = window.webContents;
+  if (!contents || contents.isDestroyed?.()) return false;
+  if (typeof contents.reloadIgnoringCache === "function") contents.reloadIgnoringCache();
+  else if (typeof contents.reload === "function") contents.reload();
+  else void window.loadFile(overlayRendererEntry);
+  return true;
+}
+
+async function assertCurrentCaptureAttempt(token) {
+  if (runtimeLifecycle.isCaptureAttemptCurrent(token)) return;
+  await runtimeLifecycle.waitForIdle();
+  throw new RuntimeLifecycleError(
+    "capture_attempt_interrupted",
+    "The meeting start was canceled after a system interruption."
+  );
 }
 
 async function waitForRendererCloseReady(windowToClose) {
@@ -672,6 +770,7 @@ function registerIpc() {
   ipcMain.handle("meeting:start", async (event, options, assistSelection, ...args) => {
     if (!isTrustedIpcEvent(event)) return unauthorizedResult();
     let startTransitionBegan = false;
+    let captureAttempt = null;
     try {
       if (args.length !== 0) {
         throw Object.assign(new Error("The selected meeting assistance context is invalid."), {
@@ -679,15 +778,23 @@ function registerIpc() {
         });
       }
       if (meetingInProgress) throw new Error("A transcription session is already active.");
-      if (!modelCatalog) return modelCatalogUnavailableResult();
+      if (settingsAreLocked()) throw new Error("A transcription session is already changing state.");
+      captureAttempt = runtimeLifecycle.beginExplicitCaptureAttempt();
+      if (!modelCatalog) {
+        runtimeLifecycle.failCaptureAttempt(captureAttempt);
+        return modelCatalogUnavailableResult();
+      }
       const setup = await backendSetup.check();
       if (setup.state !== "ready") {
+        runtimeLifecycle.failCaptureAttempt(captureAttempt);
         return {
           ok: false,
           error: "The local engine is not ready. Open Settings, complete the suggested setup, and check again."
         };
       }
+      await assertCurrentCaptureAttempt(captureAttempt);
       const sessionContext = await resolveAssistSelection(assistSelection);
+      await assertCurrentCaptureAttempt(captureAttempt);
       startTransitionBegan = true;
       trayController?.setState("preparing");
       overlayController?.setMeetingState("preparing");
@@ -695,6 +802,13 @@ function registerIpc() {
         userDataPath: app.getPath("userData"),
         catalog: modelCatalog
       }));
+      await assertCurrentCaptureAttempt(captureAttempt);
+      if (!runtimeLifecycle.completeCaptureAttempt(captureAttempt)) {
+        throw new RuntimeLifecycleError(
+          "capture_attempt_interrupted",
+          "The meeting start was canceled after a system interruption."
+        );
+      }
       startLocalDebriefSession(engine.session_id);
       meetingInProgress = true;
       overlayController?.beginSession(engine.session_id);
@@ -704,6 +818,7 @@ function registerIpc() {
       transcriptFiles.resetCurrentAutoSavePath();
       return { ok: true, engine };
     } catch (error) {
+      runtimeLifecycle.failCaptureAttempt(captureAttempt);
       if (startTransitionBegan) {
         trayController?.setState("error");
         overlayController?.setMeetingState("error");
@@ -754,6 +869,7 @@ function registerIpc() {
       );
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
       meetingInProgress = false;
+      runtimeLifecycle.finishCapture();
       successfulStop = hadMeeting && lastSessionStopReason === "stopped";
       overlayController?.setMeetingState("stopped");
       return {
@@ -770,6 +886,7 @@ function registerIpc() {
         lastSessionStopReason ?? "stop_failed"
       );
       meetingInProgress = false;
+      runtimeLifecycle.finishCapture();
       successfulStop = false;
       overlayController?.setMeetingState("error");
       endAssistSession(assistController?.getContextSnapshot()?.sessionId);
@@ -1365,10 +1482,11 @@ function registerIpc() {
     if (!isTrustedIpcEvent(event)) return;
     const trayState = validateTrayStateDto(value);
     if (!trayState) return;
-    trayController?.setState(trayState.state);
-    const overlayState = trayState.state === "idle" ? "ready" : trayState.state;
+    const state = runtimeLifecycle.isInterruptionLatched() ? "error" : trayState.state;
+    trayController?.setState(state);
+    const overlayState = state === "idle" ? "ready" : state;
     overlayController?.setMeetingState(overlayState, {
-      reveal: trayState.state === "transcribing"
+      reveal: state === "transcribing"
     });
   });
 }
@@ -1589,7 +1707,9 @@ function isTrustedOverlayIpcEvent(event) {
 }
 
 function settingsAreLocked() {
-  return meetingInProgress || ["starting", "stopping"].includes(backend.sessionState);
+  return meetingInProgress
+    || runtimeLifecycle.isCaptureAttemptPending()
+    || ["starting", "stopping"].includes(backend.sessionState);
 }
 
 function settingsLockedResult() {
@@ -1765,6 +1885,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     if (process.platform === "win32") app.setAppUserModelId("com.luchdom.meetingtranscriber");
+    runtimeLifecycle.bindPowerMonitor(powerMonitor);
     startupService = createStartupService({
       electronApp: app,
       platform: process.platform,
@@ -1842,6 +1963,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
+    runtimeLifecycle.destroy();
     unregisterOverlayDisplayRecovery();
     shortcutRegistry?.destroy();
     shortcutRegistry = null;

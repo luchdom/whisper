@@ -1,5 +1,26 @@
 export const DEBRIEF_MAX_ITEM_TEXT_CHARS = 2_000;
 
+const UNSAFE_DEBRIEF_TEXT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+
+export function containsUnsafeDebriefTextControl(value) {
+  return typeof value === "string" && UNSAFE_DEBRIEF_TEXT_CONTROL.test(value);
+}
+
+export function hasUnpairedDebriefSurrogate(value) {
+  if (typeof value !== "string") return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function normalizeDebriefText(value) {
   return String(value ?? "").replace(/\s+/gu, " ").trim();
 }

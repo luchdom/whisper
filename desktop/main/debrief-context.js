@@ -1,3 +1,8 @@
+import {
+  containsUnsafeDebriefTextControl,
+  hasUnpairedDebriefSurrogate
+} from "../shared/debrief-text.js";
+
 export const DEBRIEF_CONTEXT_SCHEMA_VERSION = 1;
 
 export const DEBRIEF_CONTEXT_LIMITS = Object.freeze({
@@ -200,7 +205,11 @@ function createCoverage(includedSegments, observed) {
 function cloneFinalSegment(value) {
   if (!isRecord(value)) return null;
   if (value.final !== true || value.partial !== false) return null;
-  if (typeof value.text !== "string" || value.text.trim().length === 0 || value.text.length > 20_000) {
+  if (typeof value.text !== "string"
+    || value.text.trim().length === 0
+    || value.text.length > 20_000
+    || containsUnsafeDebriefTextControl(value.text)
+    || hasUnpairedDebriefSurrogate(value.text)) {
     return null;
   }
   if (!Number.isSafeInteger(value.revision) || value.revision < 0) return null;
@@ -244,7 +253,10 @@ function normalizeTranslation(value) {
     }
     return { text: null, language: null };
   }
-  if (typeof translatedText !== "string" || translatedText.length > 20_000) {
+  if (typeof translatedText !== "string"
+    || translatedText.length > 20_000
+    || containsUnsafeDebriefTextControl(translatedText)
+    || hasUnpairedDebriefSurrogate(translatedText)) {
     throw new TypeError("Translated text must be bounded.");
   }
   if (translatedLanguage !== "pt-BR") {

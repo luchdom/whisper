@@ -35,7 +35,8 @@ test("overlay is revealed only by renderer-confirmed transcribing state, never b
     'ipcMain.on("meeting:tray-state"',
     "function getRendererSettings"
   );
-  assert.match(tray, /reveal: trayState\.state === "transcribing"/);
+  assert.match(tray, /runtimeLifecycle\.isInterruptionLatched\(\)/);
+  assert.match(tray, /reveal: state === "transcribing"/);
 });
 
 test("shortcut registry replaces the direct one-off global shortcut and remains independently recoverable", async () => {

@@ -2,6 +2,8 @@ import { DEBRIEF_CONTEXT_SCHEMA_VERSION } from "./debrief-context.js";
 import {
   DEBRIEF_MAX_ITEM_TEXT_CHARS,
   boundDebriefExtractText,
+  containsUnsafeDebriefTextControl,
+  hasUnpairedDebriefSurrogate,
   normalizeDebriefText
 } from "../shared/debrief-text.js";
 
@@ -416,8 +418,12 @@ function normalizeContextSegment(value, ids) {
   ids.add(id);
   const startMs = normalizeInteger(value.start_ms, "source start", 0);
   const endMs = normalizeInteger(value.end_ms, "source end", startMs);
-  if (typeof value.text !== "string" || value.text.trim().length === 0 || value.text.length > 20_000) {
-    throw new TypeError("Debrief source text must be non-empty and bounded.");
+  if (typeof value.text !== "string"
+    || value.text.trim().length === 0
+    || value.text.length > 20_000
+    || containsUnsafeDebriefTextControl(value.text)
+    || hasUnpairedDebriefSurrogate(value.text)) {
+    throw new TypeError("Debrief source text must be non-empty, bounded, and free of unsafe controls.");
   }
   if (!new Set(["system", "microphone"]).has(value.track)) {
     throw new TypeError("Debrief source track is invalid.");

@@ -96,9 +96,12 @@ export function createOpenAIProvider({ fetch: fetchRequest } = {}) {
     validateResponse(response);
     const state = {
       text: "",
+      deltaChunks: [],
+      sawDelta: false,
       authoritativeText: null,
       outputBytes: 0,
       terminal: false,
+      done: false,
       usage: null
     };
 
@@ -210,9 +213,14 @@ async function handleSseFrame(frame, onData) {
 
 async function handleResponseEvent(data, state, onEvent) {
   if (data === "[DONE]") {
-    state.terminal = true;
+    state.done = true;
     return;
   }
+
+  // A transport sentinel is not an authoritative Responses completion. It
+  // may follow a response.completed event, but a bare or premature sentinel
+  // must not turn a truncated response into a successful empty answer.
+  if (state.done) throw protocolError();
 
   let event;
   try {
@@ -230,6 +238,14 @@ async function handleResponseEvent(data, state, onEvent) {
     );
   }
 
+  if (state.terminal) {
+    // Some transports can replay the final typed event. The first terminal is
+    // authoritative; accepting later deltas or a different terminal would let
+    // post-completion bytes rewrite the public result.
+    if (event.type === "response.completed") return;
+    throw protocolError();
+  }
+
   if (event.type === "response.output_text.delta") {
     if (typeof event.delta !== "string") throw protocolError();
     state.outputBytes += Buffer.byteLength(event.delta, "utf8");
@@ -239,26 +255,48 @@ async function handleResponseEvent(data, state, onEvent) {
         "OpenAI returned more text than this request allows."
       );
     }
+    state.sawDelta = true;
     state.text += event.delta;
-    await dispatchEvent(onEvent, Object.freeze({ type: "delta", delta: event.delta }));
+    // Provider deltas remain private until an authoritative terminal payload
+    // confirms that the streamed text is the answer OpenAI completed. This
+    // prevents a disagreeing output_text.done/response.completed payload from
+    // leaving an inconsistent suggestion visible in the renderer.
+    state.deltaChunks.push(event.delta);
     return;
   }
 
   if (event.type === "response.output_text.done") {
     if (typeof event.text !== "string") throw protocolError();
-    if (Buffer.byteLength(event.text, "utf8") > PROVIDER_LIMITS.maxOutputTextBytes) {
-      throw new OpenAIProviderError(
-        "provider_output_too_large",
-        "OpenAI returned more text than this request allows."
-      );
+    assertOutputTextSize(event.text);
+    if (state.sawDelta && event.text !== state.text) throw protocolError();
+    if (state.authoritativeText !== null && event.text !== state.authoritativeText) {
+      throw protocolError();
     }
     state.authoritativeText = event.text;
     return;
   }
 
   if (event.type === "response.completed") {
-    state.terminal = true;
+    const completedText = extractCompletedOutputText(event.response);
+    if (completedText !== null) {
+      assertOutputTextSize(completedText);
+      if (state.sawDelta && completedText !== state.text) throw protocolError();
+      if (state.authoritativeText !== null && completedText !== state.authoritativeText) {
+        throw protocolError();
+      }
+      state.authoritativeText = completedText;
+    } else if (state.authoritativeText === null) {
+      state.authoritativeText = state.text;
+    }
+
+    // Keep the public stream chunked and backpressured, but do not expose any
+    // chunk until every available authoritative representation agrees.
+    for (const delta of state.deltaChunks) {
+      await dispatchEvent(onEvent, Object.freeze({ type: "delta", delta }));
+    }
+    state.deltaChunks.length = 0;
     state.usage = normalizeUsage(event.response?.usage);
+    state.terminal = true;
     return;
   }
 
@@ -341,6 +379,33 @@ function normalizeUsage(value) {
   const totalTokens = normalizeTokenCount(value.total_tokens);
   if (inputTokens === null && outputTokens === null && totalTokens === null) return null;
   return Object.freeze({ inputTokens, outputTokens, totalTokens });
+}
+
+function extractCompletedOutputText(response) {
+  if (!isRecord(response) || !Object.hasOwn(response, "output")) return null;
+  if (!Array.isArray(response.output)) throw protocolError();
+
+  const parts = [];
+  for (const item of response.output) {
+    if (!isRecord(item)) throw protocolError();
+    if (item.type !== "message") continue;
+    if (!Array.isArray(item.content)) throw protocolError();
+    for (const content of item.content) {
+      if (!isRecord(content)) throw protocolError();
+      if (content.type !== "output_text") continue;
+      if (typeof content.text !== "string") throw protocolError();
+      parts.push(content.text);
+    }
+  }
+  return parts.join("");
+}
+
+function assertOutputTextSize(value) {
+  if (Buffer.byteLength(value, "utf8") <= PROVIDER_LIMITS.maxOutputTextBytes) return;
+  throw new OpenAIProviderError(
+    "provider_output_too_large",
+    "OpenAI returned more text than this request allows."
+  );
 }
 
 function normalizeTokenCount(value) {

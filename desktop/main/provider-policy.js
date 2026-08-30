@@ -544,7 +544,7 @@ function requireExactKeys(value, exactKeys, label) {
 }
 
 function containsUnsafeControl(value) {
-  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
+  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value);
 }
 
 function hasUnpairedSurrogate(value) {

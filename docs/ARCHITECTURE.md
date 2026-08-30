@@ -1,6 +1,6 @@
 # Architecture and delivery boundary
 
-Current source release: **v0.7.0**.
+Current source release: **v0.9.0**.
 
 ## Current data flow
 
@@ -81,6 +81,8 @@ The v0.7.0 renderer is an overt meeting workspace rather than a concealed assist
 Recording and hosted assistance use separate gates. Every local Start opens a renderer-owned modal that states audio stays local/not saved and requires the user to confirm participant knowledge and recording permission before capture APIs are called. Each OpenAI transmission separately requires the current meeting disclosure plus an explicit Send. Accepting either gate does not accept the other; neither profile/private-context setup nor provider consent starts audio capture.
 
 The compact overlay is created by main as a separate window and starts hidden. Backend preparation can set **Preparing — not recording**, but only renderer-confirmed transcription may auto-reveal it, without focus. The complete state vocabulary is **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, and **Stopped — not recording**. Show/Hide never changes capture state, and meeting stop or replacement clears the projected meeting content.
+
+`runtime-lifecycle.js` owns capture-generation invalidation and fail-closed cleanup across power suspend/resume and main-renderer failure. An interruption invalidates an async Start before it can become active, cancels Assist/provider work, finalizes retained debrief context as incomplete before backend stop, clears transient/autosave ownership, and latches error presentation until a new explicit Start. Duplicate native events coalesce. Overlay-renderer recovery is separately bounded and cannot stop or start capture. Renderer capture monitoring also treats prolonged mute, a suspended audio context, and a packet stall as explicit interruptions; it never silently auto-resumes a meeting after an uncertain gap.
 
 Overlay projection is finalized-only and bounded independently from the canonical stores: no more than two segments, each no more than 2,000 characters, plus the latest explicitly requested suggestion up to 4,000 characters. It receives no draft transcript, raw audio, provider question, private-pack body, API key, or provider-send capability. The overlay preload exposes only status read/subscription, Show workspace, Open Copilot, and Hide; every start, consent, Review, and Send action remains in the full workspace.
 
@@ -220,6 +222,8 @@ Distribution keeps that source boundary but adds a platform-native PyInstaller `
 Every distribution also includes `SBOM.cdx.json` and `THIRD_PARTY_NOTICES.md`. Unsigned developer packages remain distinct from release acceptance. The release configuration forces Windows/macOS signing and enables macOS notarization, while repository workflows build Windows x64 and macOS ARM artifacts on their native OS. Signing credentials, notarization, clean-machine install/upgrade/repair/uninstall, and hardware behavior are external gates; see `docs/DISTRIBUTION.md`.
 
 ## Validation boundary
+
+The source tree now includes three aggregate-only native acceptance tools: the Windows overlay/capture matrix, the Windows Electron `safeStorage`/DPAPI smoke, and the operator-driven Electron desktop soak. They use synthetic canaries and disposable operating-system temp roots, reject payload/path fields, and fail closed on skips or cleanup failure. Contract tests and fake/short runs validate instrumentation but cannot produce a release pass. See `docs/OVERLAY_CAPTURE_ACCEPTANCE.md`, `docs/ASSIST_SECURITY_ACCEPTANCE.md`, `docs/DESKTOP-SOAK.md`, and `docs/PLATFORM-COMPATIBILITY.md`.
 
 The automated soak compresses 60 virtual minutes into a deterministic queue/state regression and reports its limitation in its output. It verifies bounded queue accounting and drainage, not real-time ASR throughput, translation throughput, meeting-capture durability, or speaker accuracy. A separate strict release-scope wall-clock backend run fed the first hour of a public multi-speaker recording through the production JSONL sidecar at the application's 200 ms packet cadence with real `small.en` inference, online diarization, and local English-to-pt-BR translation. That Windows sidecar gate now passes, but it bypasses desktop system-audio capture, Electron IPC, renderer reconciliation, and autosave. A real 60-minute Windows desktop meeting and a real 60-minute macOS meeting with working devices remain required.
 

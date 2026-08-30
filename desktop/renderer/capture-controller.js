@@ -1,6 +1,8 @@
 import { StreamingAudioPipeline, TRANSCRIPTION_SAMPLE_RATE } from "./lib/audio-pipeline.js";
 
 const PROCESSOR_NAME = "transcription-capture";
+const DEFAULT_PACKET_STALL_TIMEOUT_MS = 5_000;
+const DEFAULT_TRACK_MUTE_TIMEOUT_MS = 2_000;
 
 export class CaptureController {
   constructor({
@@ -9,7 +11,11 @@ export class CaptureController {
     onActivityChange = () => {},
     onInterruption = () => {},
     requesters,
-    now = () => performance.now()
+    now = () => performance.now(),
+    setTimer = (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+    clearTimer = (handle) => globalThis.clearTimeout(handle),
+    packetStallTimeoutMs = DEFAULT_PACKET_STALL_TIMEOUT_MS,
+    trackMuteTimeoutMs = DEFAULT_TRACK_MUTE_TIMEOUT_MS
   }) {
     this.bridge = bridge;
     this.onSourceState = onSourceState;
@@ -20,6 +26,10 @@ export class CaptureController {
       microphone: requestMicrophone
     };
     this.now = now;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+    this.packetStallTimeoutMs = positiveTimeout(packetStallTimeoutMs, "packetStallTimeoutMs");
+    this.trackMuteTimeoutMs = positiveTimeout(trackMuteTimeoutMs, "trackMuteTimeoutMs");
     this.sources = new Map();
     this.pendingSends = new Set();
     this.stopping = false;
@@ -124,6 +134,7 @@ export class CaptureController {
     }
 
     const context = new AudioContext({ latencyHint: "interactive" });
+    let source = null;
     try {
       await context.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
       assertCurrent();
@@ -147,7 +158,7 @@ export class CaptureController {
       }
 
       const pipeline = new StreamingAudioPipeline({ sourceSampleRate: context.sampleRate });
-      const source = {
+      source = {
         track,
         stream,
         audioTrack,
@@ -157,12 +168,33 @@ export class CaptureController {
         silentGain,
         pipeline,
         nextPacketMs: sourceStartOffset(this.sessionOriginMs, this.now()),
-        onEnded: null
+        lastPacketAtMs: this.now(),
+        muted: Boolean(audioTrack.muted),
+        packetStallTimer: null,
+        trackMuteTimer: null,
+        monitoring: true,
+        onEnded: null,
+        onMute: null,
+        onUnmute: null,
+        onContextStateChange: null
       };
       source.onEnded = () => this.reportInterruption(track, captureError(track, "input_interrupted"));
+      source.onMute = () => this.observeTrackMute(source);
+      source.onUnmute = () => this.observeTrackUnmute(source);
+      source.onContextStateChange = () => this.observeContextState(source);
       audioTrack.addEventListener("ended", source.onEnded, { once: true });
+      audioTrack.addEventListener("mute", source.onMute);
+      audioTrack.addEventListener("unmute", source.onUnmute);
+      context.addEventListener("statechange", source.onContextStateChange);
       workletNode.port.onmessage = ({ data }) => {
-        if (this.stopping || data?.type !== "audio-block" || !(data.samples instanceof Float32Array)) return;
+        if (
+          data?.type !== "audio-block" ||
+          !(data.samples instanceof Float32Array) ||
+          !this.isMonitoredSource(source) ||
+          source.muted ||
+          source.context.state !== "running"
+        ) return;
+        this.observeLivePacket(source);
         try {
           for (const packet of pipeline.push(data.samples)) this.queuePacket(source, packet);
         } catch (error) {
@@ -170,11 +202,13 @@ export class CaptureController {
         }
       };
       this.sources.set(track, source);
+      if (source.muted) this.observeTrackMute(source);
+      else this.armPacketStallWatchdog(source);
       this.onSourceState(track, "capturing", "Capturing");
     } catch (error) {
       const registered = this.sources.get(track);
+      if (source) this.cleanupSourceMonitoring(source);
       if (registered) {
-        registered.audioTrack.removeEventListener("ended", registered.onEnded);
         registered.sourceNode.disconnect();
         registered.workletNode.disconnect();
         registered.silentGain.disconnect();
@@ -184,6 +218,97 @@ export class CaptureController {
       await context.close().catch(() => {});
       throw error;
     }
+  }
+
+  observeLivePacket(source) {
+    if (!this.isMonitoredSource(source) || source.muted || source.context.state !== "running") return;
+    source.lastPacketAtMs = this.now();
+    this.armPacketStallWatchdog(source);
+  }
+
+  observeTrackMute(source) {
+    if (!this.isMonitoredSource(source)) return;
+    source.muted = true;
+    this.clearSourceTimer(source, "packetStallTimer");
+    this.clearSourceTimer(source, "trackMuteTimer");
+    source.trackMuteTimer = this.setTimer(() => {
+      source.trackMuteTimer = null;
+      if (!this.isMonitoredSource(source) || !source.muted) return;
+      this.reportInterruption(source.track, captureError(source.track, "input_interrupted"));
+    }, this.trackMuteTimeoutMs);
+  }
+
+  observeTrackUnmute(source) {
+    if (!this.isMonitoredSource(source)) return;
+    source.muted = false;
+    this.clearSourceTimer(source, "trackMuteTimer");
+    if (source.context.state !== "running") return;
+    source.lastPacketAtMs = this.now();
+    this.armPacketStallWatchdog(source);
+  }
+
+  observeContextState(source) {
+    if (!this.isMonitoredSource(source)) return;
+    if (source.context.state === "running") {
+      if (!source.muted) {
+        source.lastPacketAtMs = this.now();
+        this.armPacketStallWatchdog(source);
+      }
+      return;
+    }
+    this.clearSourceTimer(source, "packetStallTimer");
+    this.clearSourceTimer(source, "trackMuteTimer");
+    this.reportInterruption(source.track, captureError(source.track, "audio_context_suspended"));
+  }
+
+  armPacketStallWatchdog(source) {
+    this.clearSourceTimer(source, "packetStallTimer");
+    if (
+      !this.isMonitoredSource(source) ||
+      source.muted ||
+      source.context.state !== "running"
+    ) return;
+
+    const elapsedMs = Math.max(0, this.now() - source.lastPacketAtMs);
+    const remainingMs = Math.max(1, this.packetStallTimeoutMs - elapsedMs);
+    source.packetStallTimer = this.setTimer(() => {
+      source.packetStallTimer = null;
+      if (
+        !this.isMonitoredSource(source) ||
+        source.muted ||
+        source.context.state !== "running"
+      ) return;
+      if (this.now() - source.lastPacketAtMs < this.packetStallTimeoutMs) {
+        this.armPacketStallWatchdog(source);
+        return;
+      }
+      this.reportInterruption(source.track, captureError(source.track, "input_interrupted"));
+    }, remainingMs);
+  }
+
+  isMonitoredSource(source) {
+    return (
+      source.monitoring &&
+      !this.stopping &&
+      !this.interruptionReported &&
+      this.sources.get(source.track) === source
+    );
+  }
+
+  clearSourceTimer(source, name) {
+    if (source[name] == null) return;
+    this.clearTimer(source[name]);
+    source[name] = null;
+  }
+
+  cleanupSourceMonitoring(source) {
+    source.monitoring = false;
+    this.clearSourceTimer(source, "packetStallTimer");
+    this.clearSourceTimer(source, "trackMuteTimer");
+    source.audioTrack.removeEventListener("ended", source.onEnded);
+    source.audioTrack.removeEventListener("mute", source.onMute);
+    source.audioTrack.removeEventListener("unmute", source.onUnmute);
+    source.context.removeEventListener("statechange", source.onContextStateChange);
   }
 
   queuePacket(source, packet) {
@@ -243,7 +368,7 @@ export class CaptureController {
 
     // End capture before producing the final partial PCM packet.
     for (const source of sources) {
-      source.audioTrack.removeEventListener("ended", source.onEnded);
+      this.cleanupSourceMonitoring(source);
       stopMediaStream(source.stream);
     }
     for (const source of sources) {
@@ -379,6 +504,13 @@ function captureError(track, code) {
     }
   };
   return new MeetingCaptureError(code, messages[track][code], track);
+}
+
+function positiveTimeout(value, name) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive finite number`);
+  }
+  return value;
 }
 
 function stopMediaStream(stream) {

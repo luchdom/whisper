@@ -44,12 +44,16 @@ test("a rejected stale start cannot overwrite an active capture's tray or overla
     true
   );
   assert.equal(
+    start.indexOf("if (settingsAreLocked())") < start.indexOf("startTransitionBegan = true"),
+    true
+  );
+  assert.equal(
     start.indexOf("await resolveAssistSelection") < start.indexOf("startTransitionBegan = true"),
     true
   );
   assert.match(
     start,
-    /catch \(error\) \{\s*if \(startTransitionBegan\) \{\s*trayController\?\.setState\("error"\);\s*overlayController\?\.setMeetingState\("error"\);\s*\}/s
+    /catch \(error\) \{\s*runtimeLifecycle\.failCaptureAttempt\(captureAttempt\);\s*if \(startTransitionBegan\) \{\s*trayController\?\.setState\("error"\);\s*overlayController\?\.setMeetingState\("error"\);\s*\}/s
   );
 });
 
@@ -113,9 +117,9 @@ test("global Assist shortcut only reveals the UI and fake assistance is developm
   assert.match(main, /if \(focusAssist\) mainWindow\.webContents\.send\("meeting:assist-shortcut"\)/);
 });
 
-test("v0.8 check gate includes every meeting-context, assistance, overlay, and debrief boundary module", async () => {
+test("v0.9 check gate includes every meeting-context, assistance, lifecycle, overlay, and debrief boundary module", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.8.0");
+  assert.equal(packageJson.version, "0.9.0");
   for (const path of [
     "desktop/main/assist-context.js",
     "desktop/main/assist-protocol.js",
@@ -126,6 +130,7 @@ test("v0.8 check gate includes every meeting-context, assistance, overlay, and d
     "desktop/main/context-pack-store.js",
     "desktop/main/debrief-context.js",
     "desktop/main/debrief-extractor.js",
+    "desktop/main/runtime-lifecycle.js",
     "desktop/main/overlay-controller.js",
     "desktop/main/overlay-policy.js",
     "desktop/main/overlay-settings-store.js",

@@ -202,7 +202,13 @@ test("macOS command candidates are checked without a shell", async () => {
     backendRoot,
     env: {},
     platform: "darwin",
-    spawnProcess: mock.spawn
+    spawnProcess: mock.spawn,
+    pathExists: (candidate) => candidate === path.join(
+      backendRoot,
+      "src",
+      "meeting_transcriber",
+      "__main__.py"
+    )
   });
 
   const result = await manager.check();

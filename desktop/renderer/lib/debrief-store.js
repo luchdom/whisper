@@ -1,3 +1,8 @@
+import {
+  containsUnsafeDebriefTextControl,
+  hasUnpairedDebriefSurrogate
+} from "../../shared/debrief-text.js";
+
 export const DEBRIEF_SCHEMA_VERSION = 1;
 
 export const DEBRIEF_SECTION_IDS = Object.freeze([
@@ -834,6 +839,8 @@ function normalizeRequiredString(value, label, maxLength, rejectControls = false
   if (
     normalized.length === 0
     || normalized.length > maxLength
+    || containsUnsafeDebriefTextControl(normalized)
+    || hasUnpairedDebriefSurrogate(normalized)
     || (rejectControls && /[\u0000-\u001f\u007f]/u.test(normalized))
   ) {
     throw new TypeError(`${label} must be non-empty and no longer than ${maxLength} characters.`);
@@ -843,7 +850,10 @@ function normalizeRequiredString(value, label, maxLength, rejectControls = false
 
 function normalizeOptionalString(value, label, maxLength) {
   if (value === null || value === undefined) return null;
-  if (typeof value !== "string" || value.length > maxLength || /[\u0000\u007f]/u.test(value)) {
+  if (typeof value !== "string"
+    || value.length > maxLength
+    || containsUnsafeDebriefTextControl(value)
+    || hasUnpairedDebriefSurrogate(value)) {
     throw new TypeError(`${label} is invalid.`);
   }
   const normalized = value.trim();
