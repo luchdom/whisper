@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { packagedResourceRelativePaths } from "../../scripts/packaged-resource-layout.mjs";
 import {
   assertSigningCredentials,
   collectSignatureTargets
@@ -10,11 +11,80 @@ import {
 
 const repositoryUrl = new URL("../../", import.meta.url);
 
+test("packaged resource discovery derives one exact supported package root", () => {
+  const windows = packagedResourceRelativePaths({
+    platform: "win32",
+    arch: "x64",
+    productName: "Meeting Transcriber",
+    executableName: "meeting-transcriber-sidecar.exe"
+  });
+  assert.deepEqual(windows, {
+    resourceRoot: "win-unpacked/resources",
+    sidecar: "win-unpacked/resources/sidecar/meeting-transcriber-sidecar.exe",
+    sbom: "win-unpacked/resources/SBOM.cdx.json"
+  });
+
+  const macArm = packagedResourceRelativePaths({
+    platform: "darwin",
+    arch: "arm64",
+    productName: "Meeting Transcriber",
+    executableName: "meeting-transcriber-sidecar"
+  });
+  assert.deepEqual(macArm, {
+    resourceRoot: "mac-arm64/Meeting Transcriber.app/Contents/Resources",
+    sidecar: "mac-arm64/Meeting Transcriber.app/Contents/Resources/sidecar/meeting-transcriber-sidecar",
+    sbom: "mac-arm64/Meeting Transcriber.app/Contents/Resources/SBOM.cdx.json"
+  });
+  assert.equal(
+    packagedResourceRelativePaths({
+      platform: "darwin",
+      arch: "x64",
+      productName: "Meeting Transcriber",
+      executableName: "meeting-transcriber-sidecar"
+    }).resourceRoot,
+    "mac/Meeting Transcriber.app/Contents/Resources"
+  );
+
+  for (const target of [
+    { platform: "linux", arch: "x64" },
+    { platform: "win32", arch: "arm64" },
+    { platform: "darwin", arch: "ia32" }
+  ]) {
+    assert.throws(
+      () => packagedResourceRelativePaths({
+        ...target,
+        productName: "Meeting Transcriber",
+        executableName: "meeting-transcriber-sidecar"
+      }),
+      /does not support/
+    );
+  }
+  assert.throws(
+    () => packagedResourceRelativePaths({
+      platform: "darwin",
+      arch: "arm64",
+      productName: "../Meeting Transcriber",
+      executableName: "meeting-transcriber-sidecar"
+    }),
+    /safe path segment/
+  );
+
+  const acceptedPaths = new Set([windows.sidecar, windows.sbom, macArm.sidecar, macArm.sbom]);
+  for (const invalidPath of [
+    "mac-arm64/not-an-app/Contents/Resources/sidecar/meeting-transcriber-sidecar",
+    "mac-arm64/Meeting Transcriber.app/Contents/Frameworks/Helper.app/Contents/Resources/SBOM.cdx.json",
+    "win-unpacked.tmp/resources/sidecar/meeting-transcriber-sidecar.exe",
+    "loose/resources/SBOM.cdx.json"
+  ]) {
+    assert.equal(acceptedPaths.has(invalidPath), false);
+  }
+});
+
 test("desktop packages the standalone runtime, SBOM, and notices", async () => {
   const packageMetadata = JSON.parse(await readFile(new URL("package.json", repositoryUrl), "utf8"));
   const resources = packageMetadata.build.extraResources;
 
-  assert.equal(packageMetadata.version, "0.9.1");
+  assert.equal(packageMetadata.version, "0.9.2");
   assert.equal(
     resources.some(({ from, to }) => (
       from === "build/sidecar/meeting-transcriber-sidecar" && to === "sidecar"
@@ -198,4 +268,8 @@ test("the SBOM separates observed runtime components from build tooling", async 
   assert.doesNotMatch(sbomScript, /python-packages\.json/);
   assert.match(verifier, /runtimeNames\.has\("pyinstaller"\)/);
   assert.match(verifier, /does not identify embedded CPython as required runtime/);
+  assert.match(verifier, /packagedResourceRelativePaths/);
+  assert.match(verifier, /relativePaths\.sidecar\.split\("\/"\)/);
+  assert.match(verifier, /relativePaths\.sbom\.split\("\/"\)/);
+  assert.doesNotMatch(verifier, /findFiles|readdirSync/);
 });

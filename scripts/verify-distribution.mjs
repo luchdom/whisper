@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { packagedResourceRelativePaths } from "./packaged-resource-layout.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const executableName = process.platform === "win32"
@@ -46,19 +47,25 @@ process.stdout.write("Standalone runtime inventory, SBOM, and notices verified.\
 function verifyPackagedResources() {
   const distributionRoot = path.join(repositoryRoot, "dist");
   if (!existsSync(distributionRoot)) throw new Error("The packaged app output is missing.");
-  const packagedSidecars = findFiles(distributionRoot, (candidate) => (
-    path.basename(candidate) === executableName
-    && candidate.replaceAll("\\", "/").includes("/resources/sidecar/")
-  ));
-  const packagedSboms = findFiles(distributionRoot, (candidate) => (
-    path.basename(candidate) === "SBOM.cdx.json"
-    && candidate.replaceAll("\\", "/").includes("/resources/")
-  ));
-  if (packagedSidecars.length === 0 || packagedSboms.length === 0) {
+  const packageMetadata = JSON.parse(
+    readFileSync(path.join(repositoryRoot, "package.json"), "utf8")
+  );
+  const relativePaths = packagedResourceRelativePaths({
+    platform: process.platform,
+    arch: process.arch,
+    productName: packageMetadata.build?.productName,
+    executableName
+  });
+  const packagedSidecar = path.join(distributionRoot, ...relativePaths.sidecar.split("/"));
+  const packagedSbom = path.join(distributionRoot, ...relativePaths.sbom.split("/"));
+  if (
+    !isPlainFileUnder(distributionRoot, packagedSidecar)
+    || !isPlainFileUnder(distributionRoot, packagedSbom)
+  ) {
     throw new Error("The packaged app is missing its standalone runtime or SBOM.");
   }
-  const packagedProbe = spawnSync(packagedSidecars[0], ["--setup-probe"], {
-    cwd: path.dirname(packagedSidecars[0]),
+  const packagedProbe = spawnSync(packagedSidecar, ["--setup-probe"], {
+    cwd: path.dirname(packagedSidecar),
     encoding: "utf8",
     env: { PATH: "", SystemRoot: process.env.SystemRoot },
     timeout: 60_000,
@@ -68,7 +75,7 @@ function verifyPackagedResources() {
   if (packagedProbe.status !== 0 || !packagedProbe.stdout.includes("__MEETING_TRANSCRIBER_SETUP_V1__")) {
     throw new Error("The packaged standalone runtime probe failed.");
   }
-  verifyBom(JSON.parse(readFileSync(packagedSboms[0], "utf8")), inventory);
+  verifyBom(JSON.parse(readFileSync(packagedSbom, "utf8")), inventory);
 }
 
 function verifyInventory(value, runtimeRoot) {
@@ -136,16 +143,25 @@ function normalizeName(value) {
   return String(value).toLowerCase().replace(/[._]+/g, "-");
 }
 
-function findFiles(root, predicate) {
-  const matches = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    const candidate = path.join(root, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      matches.push(...findFiles(candidate, predicate));
-    } else if (entry.isFile() && statSync(candidate).size >= 0 && predicate(candidate)) {
-      matches.push(candidate);
+function isPlainFileUnder(root, candidate) {
+  try {
+    const rootMetadata = lstatSync(root);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) return false;
+    const relative = path.relative(root, candidate);
+    if (!relative || path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+      return false;
     }
+    const components = relative.split(path.sep);
+    let current = root;
+    for (const [index, component] of components.entries()) {
+      current = path.join(current, component);
+      const metadata = lstatSync(current);
+      if (metadata.isSymbolicLink()) return false;
+      if (index === components.length - 1) return metadata.isFile();
+      if (!metadata.isDirectory()) return false;
+    }
+    return false;
+  } catch {
+    return false;
   }
-  return matches;
 }

@@ -1,6 +1,6 @@
 # Architecture and delivery boundary
 
-Current source release: **v0.9.1**.
+Current source release: **v0.9.2**.
 
 ## Current data flow
 
@@ -221,7 +221,7 @@ The source repository provides repo-relative, idempotent Windows and macOS boots
 
 Distribution keeps that source boundary but adds a platform-native PyInstaller `onedir` sidecar. `scripts/build-sidecar.mjs` uses a pinned build toolchain, collects the active CPython interpreter plus the ASR/diarization/translation native stack, and verifies the resulting executable with both the content-free setup probe and the production JSONL shutdown lifecycle. Electron places the whole runtime directory under `process.resourcesPath/sidecar`; packaged main strips development runtime overrides, setup probes only the bundled executable, and the controller launches it directly without Python module arguments. Failure never falls back to a global interpreter. Backend source and the immutable model manifest remain separate resources for the model catalog; model artifacts remain on-demand.
 
-Every distribution also includes `SBOM.cdx.json` and `THIRD_PARTY_NOTICES.md`. Unsigned developer packages remain distinct from release acceptance. The release configuration forces Windows/macOS signing and enables macOS notarization, while repository workflows build Windows x64 and macOS ARM artifacts on their native OS. Signing credentials, notarization, clean-machine install/upgrade/repair/uninstall, and hardware behavior are external gates; see `docs/DISTRIBUTION.md`.
+Every distribution also includes `SBOM.cdx.json` and `THIRD_PARTY_NOTICES.md`. Packaged verification recognizes the exact platform layouts—Windows `resources` and macOS `Contents/Resources`—then executes the embedded sidecar and revalidates the packaged SBOM. Unsigned developer packages remain distinct from release acceptance. The release configuration forces Windows/macOS signing and enables macOS notarization, while repository workflows build Windows x64 and macOS ARM artifacts on their native OS. Signing credentials, notarization, clean-machine install/upgrade/repair/uninstall, and hardware behavior are external gates; see `docs/DISTRIBUTION.md`.
 
 ## Validation boundary
 
