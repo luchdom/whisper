@@ -148,7 +148,7 @@ class DiarizationTests(unittest.TestCase):
         data = b"verified-test-model"
         digest = hashlib.sha256(data).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "nested" / diarization.MODEL_FILENAME
+            target = Path(directory).resolve(strict=True) / "nested" / diarization.MODEL_FILENAME
             with (
                 patch.object(diarization, "MODEL_SIZE_BYTES", len(data)),
                 patch.object(diarization, "MODEL_SHA256", digest),

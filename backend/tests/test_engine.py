@@ -165,7 +165,7 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(downloads[0][1]["revision"], spec.revision)
             self.assertEqual(len(loads), 1)
             prepared = Path(loads[0][0])
-            self.assertEqual(prepared.parent, Path(directory))
+            self.assertEqual(prepared.parent, Path(directory).resolve(strict=True))
             self.assertFalse((prepared / ".cache").exists())
 
     def test_corrupt_cache_fails_closed_without_redownload_or_model_construction(self) -> None:

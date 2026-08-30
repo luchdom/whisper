@@ -1,6 +1,6 @@
 # Architecture and delivery boundary
 
-Current source release: **v0.9.0**.
+Current source release: **v0.9.1**.
 
 ## Current data flow
 
@@ -138,6 +138,8 @@ Provisioning follows one fail-closed path:
 4. On a miss, download only the manifest allowlist into an app-owned staging directory at the pinned revision.
 5. Check every size and SHA-256 digest before atomically promoting the directory.
 6. Refuse to load on any mismatch. There is no fallback to a mutable upstream revision or global cache entry.
+
+Every destination-chain component is inspected lexically and links, reparse points, files, or missing ancestors fail closed. On macOS only the operating system's fixed `/var -> /private/var` and `/tmp -> /private/tmp` compatibility aliases are normalized for internal chain validation, and only after `lstat` plus `readlink` confirms the exact allowlisted target. Arbitrary links below or outside those two aliases remain rejected.
 
 Selecting a model updates settings only. Network access does not begin until **Start transcription** needs an unprovisioned model. The UI reports cache checking, downloading, and hashing as separate phases; multi-gigabyte models can spend visible time in verification.
 

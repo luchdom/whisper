@@ -14,7 +14,7 @@ test("desktop packages the standalone runtime, SBOM, and notices", async () => {
   const packageMetadata = JSON.parse(await readFile(new URL("package.json", repositoryUrl), "utf8"));
   const resources = packageMetadata.build.extraResources;
 
-  assert.equal(packageMetadata.version, "0.9.0");
+  assert.equal(packageMetadata.version, "0.9.1");
   assert.equal(
     resources.some(({ from, to }) => (
       from === "build/sidecar/meeting-transcriber-sidecar" && to === "sidecar"

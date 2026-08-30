@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from typing import BinaryIO, ContextManager
@@ -26,6 +27,10 @@ LOCK_POLL_INTERVAL_SECONDS = 0.1
 MAX_LOCK_POLL_INTERVAL_SECONDS = 10.0
 MAX_STAGING_ENTRIES_TO_REMOVE = 32
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+DARWIN_SYSTEM_DIRECTORY_ALIASES = (
+    (Path("/var"), "private/var", Path("/private/var")),
+    (Path("/tmp"), "private/tmp", Path("/private/tmp")),
+)
 
 
 class ProvisioningError(RuntimeError):
@@ -527,12 +532,13 @@ def _require_plain_directory(path: Path, message: str) -> None:
 
 
 def _absolute_lexical_path(path: Path) -> Path:
-    """Return an absolute path without resolving links or reparse points."""
+    """Return an absolute path without resolving caller-controlled links."""
 
     try:
-        return Path(os.path.abspath(os.fspath(path)))
+        absolute = Path(os.path.abspath(os.fspath(path)))
     except (OSError, TypeError, ValueError) as exc:
         raise ModelIntegrityError("A model path could not be normalized safely") from exc
+    return _normalize_darwin_system_directory_alias(absolute)
 
 
 def _directory_chain(path: Path) -> tuple[Path, ...]:
@@ -548,6 +554,33 @@ def _directory_chain(path: Path) -> tuple[Path, ...]:
         current = current / part
         chain.append(current)
     return tuple(chain)
+
+
+def _normalize_darwin_system_directory_alias(path: Path) -> Path:
+    """Normalize only macOS's fixed temp aliases, never arbitrary links."""
+
+    if sys.platform != "darwin":
+        return path
+    for alias, expected_raw_target, expected_target in DARWIN_SYSTEM_DIRECTORY_ALIASES:
+        try:
+            relative = path.relative_to(alias)
+        except ValueError:
+            continue
+        try:
+            before = alias.lstat()
+            raw_target = os.readlink(alias)
+            after = alias.lstat()
+        except (OSError, TypeError, ValueError):
+            return path
+        if (
+            not stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISLNK(after.st_mode)
+            or not _same_file_metadata(before, after)
+            or raw_target != expected_raw_target
+        ):
+            return path
+        return expected_target.joinpath(relative)
+    return path
 
 
 def _require_plain_directory_chain(path: Path, message: str) -> Path:

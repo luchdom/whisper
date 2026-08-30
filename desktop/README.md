@@ -4,7 +4,7 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
-Current source release: **v0.9.0**.
+Current source release: **v0.9.1**.
 
 ## Requirements
 

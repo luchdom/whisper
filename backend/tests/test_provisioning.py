@@ -4,6 +4,7 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from meeting_transcriber.provisioning import (
     provision_directory,
     verify_directory,
     verify_file,
+    _normalize_darwin_system_directory_alias,
 )
 
 
@@ -37,12 +39,81 @@ def declared(path: str, data: bytes) -> ManifestFile:
 
 
 class ProvisioningTests(unittest.TestCase):
+    def test_darwin_temp_alias_normalization_is_exact_and_fail_closed(self) -> None:
+        symlink_metadata = SimpleNamespace(st_mode=stat.S_IFLNK, st_dev=1, st_ino=2)
+        aliases = {
+            Path("/var"): "private/var",
+            Path("/tmp"): "private/tmp",
+        }
+
+        with (
+            patch("meeting_transcriber.provisioning.sys.platform", "darwin"),
+            patch.object(Path, "lstat", autospec=True, return_value=symlink_metadata),
+            patch(
+                "meeting_transcriber.provisioning.os.readlink",
+                side_effect=lambda value: aliases[Path(value)],
+            ),
+        ):
+            self.assertEqual(
+                _normalize_darwin_system_directory_alias(Path("/var/folders/test/model")),
+                Path("/private/var/folders/test/model"),
+            )
+            self.assertEqual(
+                _normalize_darwin_system_directory_alias(Path("/tmp/test/model")),
+                Path("/private/tmp/test/model"),
+            )
+
+        for hostile_target in (
+            "attacker",
+            "/private/var",
+            "private/var/",
+            "./private/var",
+            "private/redirect/../var",
+            "private/var-other",
+        ):
+            with self.subTest(hostile_target=hostile_target):
+                with (
+                    patch("meeting_transcriber.provisioning.sys.platform", "darwin"),
+                    patch.object(Path, "lstat", autospec=True, return_value=symlink_metadata),
+                    patch(
+                        "meeting_transcriber.provisioning.os.readlink",
+                        return_value=hostile_target,
+                    ),
+                ):
+                    original = Path("/var/folders/test/model")
+                    self.assertEqual(_normalize_darwin_system_directory_alias(original), original)
+
+        changed_metadata = SimpleNamespace(st_mode=stat.S_IFLNK, st_dev=1, st_ino=3)
+        with (
+            patch("meeting_transcriber.provisioning.sys.platform", "darwin"),
+            patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=[symlink_metadata, changed_metadata],
+            ),
+            patch("meeting_transcriber.provisioning.os.readlink", return_value="private/var"),
+        ):
+            original = Path("/var/folders/test/model")
+            self.assertEqual(_normalize_darwin_system_directory_alias(original), original)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS fixed system alias coverage")
+    def test_macos_fixed_temp_aliases_support_verified_files(self) -> None:
+        data = b"verified"
+        spec = declared("model.bin", data)
+        for temporary_parent in ("/var/tmp", "/tmp"):
+            with self.subTest(temporary_parent=temporary_parent):
+                with tempfile.TemporaryDirectory(dir=temporary_parent) as directory:
+                    target = Path(directory) / "model.bin"
+                    target.write_bytes(data)
+                    self.assertEqual(verify_file(target, spec), target.resolve(strict=True))
+
     def test_verify_directory_requires_exact_regular_files_and_hashes(self) -> None:
         config = b'{"model":"test"}'
         model = b"model-bytes"
         files = (declared("config.json", config), declared("weights/model.bin", model))
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "model"
+            root = Path(directory).resolve(strict=True) / "model"
             (root / "weights").mkdir(parents=True)
             (root / "config.json").write_bytes(config)
             (root / "weights" / "model.bin").write_bytes(model)
@@ -61,7 +132,7 @@ class ProvisioningTests(unittest.TestCase):
         data = b"verified"
         spec = declared("model.bin", data)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             real = root / "real.bin"
             link = root / "model.bin"
             real.write_bytes(data)
@@ -76,7 +147,7 @@ class ProvisioningTests(unittest.TestCase):
         data = b"verified"
         spec = declared("model.bin", data)
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "model.bin"
+            target = Path(directory).resolve(strict=True) / "model.bin"
             target.write_bytes(data)
             target_metadata = target.lstat()
 
@@ -99,7 +170,7 @@ class ProvisioningTests(unittest.TestCase):
         files = (declared("config.json", config), declared("nested/model.bin", model))
         phases: list[str] = []
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "asr" / "test-model"
+            target = Path(directory).resolve(strict=True) / "asr" / "test-model"
             target.parent.mkdir()
             abandoned = target.parent / f".{target.name}.staging-abandoned"
             abandoned.mkdir()
@@ -129,7 +200,7 @@ class ProvisioningTests(unittest.TestCase):
     def test_provisioning_rejects_symlink_in_destination_parent_chain(self) -> None:
         files = (declared("model.bin", b"model"),)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             redirected = root / "redirected"
             redirected.mkdir()
             redirected_staging = redirected / ".model.staging-must-remain"
@@ -153,7 +224,7 @@ class ProvisioningTests(unittest.TestCase):
     def test_provisioning_rejects_injected_windows_reparse_ancestor(self) -> None:
         files = (declared("model.bin", b"model"),)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             hostile_parent = root / "models"
             hostile_parent.mkdir()
             target = hostile_parent / "nested" / "model"
@@ -189,7 +260,7 @@ class ProvisioningTests(unittest.TestCase):
     def test_provisioning_rejects_non_directory_ancestor_before_creation(self) -> None:
         files = (declared("model.bin", b"model"),)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             hostile_parent = root / "models"
             hostile_parent.write_bytes(b"not-a-directory")
             target = hostile_parent / "nested" / "model"
@@ -207,7 +278,7 @@ class ProvisioningTests(unittest.TestCase):
         fetches = 0
         phases: list[str] = []
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "model"
+            target = Path(directory).resolve(strict=True) / "model"
 
             def fetch(staging: Path) -> None:
                 nonlocal fetches
@@ -239,7 +310,7 @@ class ProvisioningTests(unittest.TestCase):
     def test_failed_fetch_removes_only_same_target_staging(self) -> None:
         files = (declared("model.bin", b"model"),)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             target = root / "model"
             unrelated = root / ".another-model.staging-preserve"
             unrelated.mkdir()
@@ -257,7 +328,7 @@ class ProvisioningTests(unittest.TestCase):
     def test_disk_preflight_happens_before_fetch(self) -> None:
         files = (declared("model.bin", b"model"),)
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "model"
+            target = Path(directory).resolve(strict=True) / "model"
             with patch(
                 "meeting_transcriber.provisioning.shutil.disk_usage",
                 return_value=SimpleNamespace(free=4),
@@ -272,7 +343,7 @@ class ProvisioningTests(unittest.TestCase):
 
     def test_second_lock_attempt_observes_bounded_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            lock_path = Path(directory) / ".model.lock"
+            lock_path = Path(directory).resolve(strict=True) / ".model.lock"
             with CrossProcessFileLock(lock_path):
                 with self.assertRaisesRegex(ProvisioningLockTimeout, "Timed out"):
                     with CrossProcessFileLock(lock_path, timeout_seconds=0):
@@ -290,7 +361,7 @@ except ProvisioningLockTimeout:
 raise SystemExit(0)
 """
         with tempfile.TemporaryDirectory() as directory:
-            lock_path = Path(directory) / ".model.lock"
+            lock_path = Path(directory).resolve(strict=True) / ".model.lock"
             with CrossProcessFileLock(lock_path):
                 result = subprocess.run(
                     [sys.executable, "-B", "-c", child_code, str(lock_path)],
@@ -303,7 +374,7 @@ raise SystemExit(0)
 
     def test_lock_timing_parameters_are_finite_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            lock_path = Path(directory) / ".model.lock"
+            lock_path = Path(directory).resolve(strict=True) / ".model.lock"
             for invalid in (float("nan"), float("inf"), 301):
                 with self.subTest(timeout=invalid), self.assertRaisesRegex(ValueError, "finite"):
                     CrossProcessFileLock(lock_path, timeout_seconds=invalid)
@@ -315,7 +386,7 @@ raise SystemExit(0)
         data = b"speaker-model"
         spec = declared("speaker.onnx", data)
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "models" / "speaker.onnx"
+            target = Path(directory).resolve(strict=True) / "models" / "speaker.onnx"
             self.assertEqual(
                 download_verified_file(
                     target=target,
