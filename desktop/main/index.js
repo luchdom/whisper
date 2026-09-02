@@ -1485,9 +1485,7 @@ function registerIpc() {
     const state = runtimeLifecycle.isInterruptionLatched() ? "error" : trayState.state;
     trayController?.setState(state);
     const overlayState = state === "idle" ? "ready" : state;
-    overlayController?.setMeetingState(overlayState, {
-      reveal: state === "transcribing"
-    });
+    overlayController?.setMeetingState(overlayState);
   });
 }
 

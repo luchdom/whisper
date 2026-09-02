@@ -460,7 +460,8 @@ test("the v0.6 workspace keeps recording permission separate, tabs native, and o
   assert.doesNotMatch(prefillFunction, /requestAssist\(|setAssistConsent\(/);
   assert.match(app, /button\.title = "Prefill the question\. This does not send anything\."/);
 
-  assert.match(html, /id="toggle-overlay"[^>]*hidden/);
+  assert.match(html, /id="toggle-overlay"[^>]*hidden>Show overlay<\/button>/);
+  assert.match(app, /overlayStatus\?\.visible \? "Hide overlay" : "Show overlay"/);
   assert.match(html, /id="overlay-settings-section"[^>]*hidden/);
   assert.match(app, /function hasOverlayBridge\(\) \{\s*return typeof bridge\?\.getOverlayStatus === "function";/s);
   assert.match(app, /typeof bridge\?\.onOverlayStatus === "function"/);

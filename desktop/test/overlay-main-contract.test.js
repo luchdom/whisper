@@ -23,7 +23,7 @@ test("main ingests Assist first, relays finalized data to the overlay, then fina
   );
 });
 
-test("overlay is revealed only by renderer-confirmed transcribing state, never by backend start", async () => {
+test("meeting lifecycle updates overlay state without changing its visibility", async () => {
   const main = await read("../main/index.js");
   const start = sliceBetween(main, 'ipcMain.handle("meeting:start"', 'ipcMain.handle("meeting:audio"');
   assert.match(start, /overlayController\?\.setMeetingState\("preparing"\)/);
@@ -36,7 +36,8 @@ test("overlay is revealed only by renderer-confirmed transcribing state, never b
     "function getRendererSettings"
   );
   assert.match(tray, /runtimeLifecycle\.isInterruptionLatched\(\)/);
-  assert.match(tray, /reveal: state === "transcribing"/);
+  assert.match(tray, /overlayController\?\.setMeetingState\(overlayState\)/);
+  assert.doesNotMatch(tray, /reveal|overlayController\?\.(?:show|toggleVisibility)/);
 });
 
 test("shortcut registry replaces the direct one-off global shortcut and remains independently recoverable", async () => {

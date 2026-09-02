@@ -2367,7 +2367,7 @@ function renderOverlaySettings() {
   elements.overlayDisclosure.textContent = overlayStatus?.disclosure?.body
     ?? "Private mode is unavailable until the app can provide its current screen-capture disclosure.";
   elements.overlayOpacityRow.hidden = mode !== "private";
-  elements.overlayToggle.textContent = overlayStatus?.visible ? "Hide overlay" : "Overlay";
+  elements.overlayToggle.textContent = overlayStatus?.visible ? "Hide overlay" : "Show overlay";
   const statusMessage = overlayStatusPromise
     ? "Checking overlay and shortcut status…"
     : overlayStatus

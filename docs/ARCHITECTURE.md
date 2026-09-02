@@ -1,6 +1,6 @@
 # Architecture and delivery boundary
 
-Current source release: **v0.10.0**.
+Current source release: **v0.10.1**.
 
 ## Current data flow
 
@@ -71,7 +71,7 @@ The v0.7.0 renderer is an overt meeting workspace rather than a concealed assist
 
 Recording and hosted assistance use separate gates. Every local Start opens a renderer-owned modal that states audio stays local/not saved and requires the user to confirm participant knowledge and recording permission before capture APIs are called. Each OpenAI transmission separately requires the current meeting disclosure plus an explicit Send. Accepting either gate does not accept the other; neither profile/private-context setup nor provider consent starts audio capture.
 
-The compact overlay is created by main as a separate window and starts hidden. Backend preparation can set **Preparing — not recording**, but only renderer-confirmed transcription may auto-reveal it, without focus. The complete state vocabulary is **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, and **Stopped — not recording**. Show/Hide never changes capture state, and meeting stop or replacement clears the projected meeting content.
+The compact overlay is created by main as a separate window and starts hidden. Meeting lifecycle updates its content and state but never reveal, focus, or activate it; only an explicit workspace or Settings action, the global Show/Hide shortcut, or an explicit reset may show it. An already-visible overlay continues updating without stealing focus. The complete state vocabulary is **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, and **Stopped — not recording**. Show/Hide never changes capture state, and meeting stop or replacement clears the projected meeting content.
 
 `runtime-lifecycle.js` owns capture-generation invalidation and fail-closed cleanup across power suspend/resume and main-renderer failure. An interruption invalidates an async Start before it can become active, cancels Assist/provider work, finalizes retained debrief context as incomplete before backend stop, clears transient/autosave ownership, and latches error presentation until a new explicit Start. Duplicate native events coalesce. Overlay-renderer recovery is separately bounded and cannot stop or start capture. Renderer capture monitoring also treats prolonged mute, a suspended audio context, and a packet stall as explicit interruptions; it never silently auto-resumes a meeting after an uncertain gap.
 

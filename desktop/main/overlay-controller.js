@@ -325,7 +325,7 @@ export function createOverlayController({
     setMeetingState("preparing");
   }
 
-  function setMeetingState(value, { reveal = false } = {}) {
+  function setMeetingState(value) {
     if (!MEETING_STATES.has(value)) throw new TypeError("The overlay meeting state is invalid.");
     const wasTranscribing = meetingState === "transcribing";
     if (value === "preparing" && meetingState !== "preparing") latestMeetingIssue = null;
@@ -333,7 +333,6 @@ export function createOverlayController({
     if (value === "transcribing" && !wasTranscribing) {
       recordingStartedAt = now();
       startElapsedTimer();
-      if (reveal) show({ focus: false });
     } else if (value !== "transcribing" && wasTranscribing) {
       stopElapsedTimer();
       recordingStartedAt = null;

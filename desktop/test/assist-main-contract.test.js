@@ -119,7 +119,7 @@ test("global Assist shortcut only reveals the UI and fake assistance is developm
 
 test("release check gate includes every meeting-context, assistance, lifecycle, overlay, and debrief boundary module", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.10.0");
+  assert.equal(packageJson.version, "0.10.1");
   for (const path of [
     "desktop/main/assist-context.js",
     "desktop/main/assist-protocol.js",

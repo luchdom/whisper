@@ -78,14 +78,29 @@ test("private mode requires the exact disclosure acknowledgement and click-throu
   assert.equal("clickThrough" in fixture.store.value, false);
 });
 
-test("only actual transcribing reveals without focus and stopped clears stale live content", async () => {
+test("meeting lifecycle updates never reveal a hidden overlay", async () => {
+  const fixture = createFixture();
+  await fixture.controller.initialize();
+  fixture.controller.beginSession("session-hidden");
+
+  for (const state of ["preparing", "transcribing", "error", "transcribing", "stopped"]) {
+    fixture.controller.setMeetingState(state);
+    assert.equal(fixture.windows[0].visible, false, `${state} must not reveal the overlay`);
+  }
+  assert.equal(fixture.windows[0].showInactiveCalls, 0);
+  assert.equal(fixture.windows[0].focusCalls, 0);
+});
+
+test("an explicit reveal during transcription does not steal focus and stopped clears stale live content", async () => {
   let clock = 5_000;
   const fixture = createFixture({ now: () => clock });
   await fixture.controller.initialize();
   fixture.controller.beginSession("session-1");
   assert.equal(fixture.windows[0].visible, false);
 
-  fixture.controller.setMeetingState("transcribing", { reveal: true });
+  fixture.controller.setMeetingState("transcribing");
+  assert.equal(fixture.windows[0].visible, false);
+  fixture.controller.show({ focus: false });
   assert.equal(fixture.windows[0].visible, true);
   assert.equal(fixture.windows[0].showInactiveCalls, 1);
   assert.equal(fixture.windows[0].focusCalls, 0);
@@ -147,6 +162,9 @@ test("only actual transcribing reveals without focus and stopped clears stale li
   assert.equal(status.meeting.recording, true);
   fixture.controller.setMeetingState("stopped");
   status = fixture.controller.getStatus();
+  assert.equal(fixture.windows[0].visible, true);
+  assert.equal(fixture.windows[0].showInactiveCalls, 1);
+  assert.equal(fixture.windows[0].focusCalls, 0);
   assert.equal(status.meeting.recording, false);
   assert.equal(status.meeting.elapsedMs, 0);
   assert.equal(status.meeting.sourceSummary, "Waiting for finalized audio");

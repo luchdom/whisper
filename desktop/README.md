@@ -4,7 +4,7 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
-Current source release: **v0.10.0**.
+Current source release: **v0.10.1**.
 
 ## Requirements
 
@@ -59,7 +59,7 @@ OpenAI setup remains local until a request. Provider/model selection, profile se
 
 ### Overlay behavior and modes
 
-The companion overlay is a separate compact, non-transparent window. It initializes hidden and does not appear merely because the backend entered preparation. It can reveal without taking focus only after the main renderer confirms active transcription. Its status is one of **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, or **Stopped — not recording**, with current source and elapsed time where applicable. Stopping the meeting or starting its replacement clears projected transcript and Copilot output without affecting the full transcript store.
+The companion overlay is a separate compact, non-transparent window. It initializes hidden, and preparation, transcription, errors, and stopping update its state without revealing, focusing, or activating it. It appears only after an explicit **Show overlay** action in the workspace or Settings, the global Show/Hide shortcut, or an explicit overlay reset. If already visible, it stays visible and updates in place without stealing focus. Its status is one of **Ready — not recording**, **Preparing — not recording**, **Recording and transcribing**, **Needs attention**, or **Stopped — not recording**, with current source and elapsed time where applicable. Stopping the meeting or starting its replacement clears projected transcript and Copilot output without affecting the full transcript store.
 
 Projection into the overlay is intentionally narrow: at most the two newest finalized transcript segments, each capped at 2,000 characters, and the latest explicitly requested suggestion, capped at 4,000 characters. Draft text, private-pack bodies, the API key, the provider question, raw audio, and provider-request controls do not enter its status DTO. Its only actions are **Show workspace**, **Open Copilot**, and **Hide**; it cannot start audio capture or send an OpenAI request.
 
