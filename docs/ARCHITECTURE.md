@@ -1,6 +1,6 @@
 # Architecture and delivery boundary
 
-Current source release: **v0.9.2**.
+Current source release: **v0.10.0**.
 
 ## Current data flow
 
@@ -12,21 +12,12 @@ microphone ─────> AudioWorklet ─> mono 16 kHz PCM ──────
                                                                       │
                                                                       ├─> partial events ────────────────> transcript UI
                                                                       │
-                                                                      └─> finalized eligible English
-                                                                           └─> optional local pt-BR translation
-                                                                                └─> one atomic final event
-                                                                                      ├─> transcript UI/export
-                                                                                      ├─> overlay projection: newest two finals only
-                                                                                      ├─> main-owned local debrief buffer
-                                                                                      │    └─> explicit stopped/incomplete local extract
-                                                                                      │         └─> ephemeral renderer debrief store
-                                                                                      │              └─> explicit copy/Markdown export
-                                                                                      └─> main-owned Assist context buffer
-                                                                                           + meeting-start-frozen profile/private packs
-                                                                                           └─> one-use bounded provider snapshot + question
-                                                                                                └─> optional OpenAI Responses stream
-                                                                                                     ├─> separate Copilot result UI
-                                                                                                     └─> overlay: latest suggestion only
+                                                                      └─> original final event ─────────────> transcript UI/export
+                                                                           ├─> overlay/debrief/Assist context
+                                                                           └─> finalized eligible English
+                                                                                └─> bounded local pt-BR worker
+                                                                                     └─> exact segment translation update
+                                                                                          └─> same transcript/overlay row + bilingual export
 ```
 
 The two audio sources stay separate from capture through inference. That gives a truthful `You` versus `Meeting audio` distinction, preserves source overlap, and avoids destroying source information by mixing. Optional local speaker clustering adds provisional anonymous IDs only to silence-delimited system-audio utterances.
@@ -51,7 +42,7 @@ The two audio sources stay separate from capture through inference. That gives a
 - Stops Chromium's required display video track immediately; video frames are never read or stored.
 - Uses an `AudioWorklet` and deterministic streaming resampler to produce signed 16-bit little-endian, mono, 16 kHz packets.
 - Builds the model picker from the sanitized catalog instead of maintaining a second model allowlist.
-- Reconciles stable segment IDs by increasing revision, assigns first-seen friendly labels, applies session-local manual aliases, preserves original text as canonical, and exports finalized text only.
+- Reconciles stable segment IDs by increasing revision, applies translation updates only to an existing finalized exact revision, assigns first-seen friendly labels, applies session-local manual aliases, preserves original text as canonical, and exports finalized text only.
 - Presents model preparation as accessible indeterminate progress and clears it when the engine becomes ready or unavailable.
 - Reports only an exact tray-state enum and accepts only fixed focus/stop tray actions; transcript text, errors, paths, and participant data never enter native tray content.
 - Can choose Off or the allowlisted OpenAI provider, request lazy configured/encryption-available status, and trigger argument-free clipboard import/revocation. It never receives an API key, ciphertext, credential path, arbitrary provider URL, or raw provider exception.
@@ -70,7 +61,7 @@ The two audio sources stay separate from capture through inference. That gives a
 - Loads `faster-whisper` lazily, resolves every model through the strict manifest, and keeps inference behind a small `configure / prepare / transcribe / close` interface.
 - Emits cache-check, download, verification, local-initialization, optional speaker-preparation, and optional translation download/conversion/preparation phases without exposing filesystem paths or claiming an unavailable aggregate percentage.
 - Optionally loads a local WeSpeaker ONNX embedding model through `sherpa-onnx`, clusters up to 16 meeting speakers in memory, and fails soft to source labels if that model is unavailable.
-- Optionally loads the verified CTranslate2 English-to-pt-BR model, translates finalized eligible English only, and preserves the original if translation preparation or inference fails.
+- Optionally loads the verified CTranslate2 English-to-pt-BR model, emits the canonical original final before queuing eligible finalized English on one bounded translation worker, and preserves the original if preparation, inference, or translation backpressure fails.
 
 The protocol is documented in [backend/README.md](../backend/README.md).
 
@@ -107,7 +98,7 @@ The overlay `BrowserWindow` is non-transparent and uses context isolation, sandb
 
 ## Local post-meeting debrief boundary
 
-The local debrief is a separate memory path, not a hosted-assistance mode. Main calls `DebriefContextBuffer.startSession` only after `backend.startSession` returns a backend-owned session ID. The buffer accepts only finalized events for that exact session and replaces a segment only with a higher revision. It stores original text as the debrief evidence source; any pt-BR translation remains in the canonical transcript event and is excluded from generated claims and generated-source Markdown.
+The local debrief is a separate memory path, not a hosted-assistance mode. Main calls `DebriefContextBuffer.startSession` only after `backend.startSession` returns a backend-owned session ID. The buffer accepts only finalized events for that exact session and replaces a segment only with a higher revision. It stores original text as the debrief evidence source; later pt-BR enrichment remains in the transcript store and is excluded from generated claims and generated-source Markdown.
 
 Normal stop finalizes the buffer as complete. Interrupted, failed, or ambiguous stop reasons finalize it as incomplete while retaining the finalized text already received. The context remains available after stop, but the extractor does not run automatically; the user must choose **Generate local debrief**. A successful later meeting clears the prior context before accepting new finals. **Delete debrief source data…** clears the retained context and renderer draft and disables regeneration. The context has no disk persistence across app exit. An explicitly exported Markdown file is outside that lifecycle, remains user-owned, and is never silently deleted.
 
@@ -181,9 +172,11 @@ Translation mode is `off` by default. The only current enabled mode is local Eng
 
 Original ASR text is always canonical. Replaceable partials have no translation. A finalized segment is eligible only when English is explicitly selected or automatic detection reports English with confidence of at least `0.80`. Eligible final text is translated with the `>>pob<<` target token, while non-English or low-confidence text remains unchanged.
 
-The current sidecar translates synchronously inside the inference worker before it emits that segment's final event. Original and translated text therefore arrive atomically in one revision, and stop/autosave cannot overtake a pending translation. This simple ordering also means translation latency delays final-event emission and keeps that job accounted in the bounded queue. A future parallel translation stage must preserve the same join and ordering guarantees before replacing it.
+The sidecar emits the canonical original final immediately after ASR and speaker assignment, then non-blockingly queues eligible text on one bounded translation worker. The worker serializes access to the mutable CTranslate2 runtime and emits a `segment_translation` event keyed to the exact session, segment ID, and original revision. Renderer and overlay apply that enrichment in place without announcing a second final, advancing Assist/debrief context, or making a provider suggestion stale. This also releases the inference job and its PCM budget before translation runs, so translation cannot hold the sole ASR worker.
 
-Translation failures are fail-soft: the sidecar reports translation as unavailable once, keeps the original text, and allows transcription and original-only export to continue. Markdown output writes English first and a clearly labeled pt-BR translation below it when one exists.
+Accepted translation work retains final order. `flush` and `stop` drain it before their completion events, which keeps renderer reconciliation and automatic saving deterministic and prevents cross-session updates. Queue saturation never blocks ASR: the overflowed optional translation is skipped, one sanitized recoverable warning is emitted, and every original final remains available.
+
+Translation failures are fail-soft: the sidecar reports translation as unavailable once, keeps the original text, and allows transcription and original-only export to continue. Markdown output writes English first and a clearly labeled pt-BR translation below it when one exists. The sidecar still prepares the optional model before capture begins; asynchronous here refers to per-phrase inference, not first-use download or initialization.
 
 ## Streaming and speaker semantics
 
@@ -227,9 +220,9 @@ Every distribution also includes `SBOM.cdx.json` and `THIRD_PARTY_NOTICES.md`. P
 
 The source tree now includes three aggregate-only native acceptance tools: the Windows overlay/capture matrix, the Windows Electron `safeStorage`/DPAPI smoke, and the operator-driven Electron desktop soak. They use synthetic canaries and disposable operating-system temp roots, reject payload/path fields, and fail closed on skips or cleanup failure. Contract tests and fake/short runs validate instrumentation but cannot produce a release pass. See `docs/OVERLAY_CAPTURE_ACCEPTANCE.md`, `docs/ASSIST_SECURITY_ACCEPTANCE.md`, `docs/DESKTOP-SOAK.md`, and `docs/PLATFORM-COMPATIBILITY.md`.
 
-The automated soak compresses 60 virtual minutes into a deterministic queue/state regression and reports its limitation in its output. It verifies bounded queue accounting and drainage, not real-time ASR throughput, translation throughput, meeting-capture durability, or speaker accuracy. A separate strict release-scope wall-clock backend run fed the first hour of a public multi-speaker recording through the production JSONL sidecar at the application's 200 ms packet cadence with real `small.en` inference, online diarization, and local English-to-pt-BR translation. That Windows sidecar gate now passes, but it bypasses desktop system-audio capture, Electron IPC, renderer reconciliation, and autosave. A real 60-minute Windows desktop meeting and a real 60-minute macOS meeting with working devices remain required.
+The automated soak compresses 60 virtual minutes into a deterministic queue/state regression and reports its limitation in its output. It verifies bounded queue accounting and drainage, not real-time ASR throughput, translation throughput, meeting-capture durability, or speaker accuracy. A separate strict release-scope wall-clock backend run fed the first hour of a public multi-speaker recording through the production JSONL sidecar at the application's 200 ms packet cadence with real `small.en` inference, online diarization, and local English-to-pt-BR translation. That Windows sidecar gate passed for v0.9.2's synchronous protocol, but the v0.10.0 asynchronous worker requires a fresh run. The evaluator now separates original-final visibility from later translation-completion latency and correlates exact revision updates without retaining transcript text. It still bypasses desktop system-audio capture, Electron IPC, renderer reconciliation, and autosave. A real 60-minute Windows desktop meeting and a real 60-minute macOS meeting with working devices remain required.
 
-A one-sentence English-to-pt-BR smoke completed in 0.109 seconds on the validated Windows machine. The strict wall-clock run then delivered all 18,000 real-time packets, emitted a non-empty pt-BR-labeled payload for all 287 non-empty final segments, skipped one empty final, emitted no warnings or errors, and stopped the decoder and sidecar cleanly with empty stderr. Resident memory peaked at 1,341.5 MiB, while private-memory medians decreased by 50.1 MiB from the first stable window to the last; final-segment latency was 5.835 seconds at p50, 7.985 seconds at p95, and 9.535 seconds maximum. The evaluator returned `passed: true`, `acceptance_scope: release`, and no acceptance failures. This completes the strict Windows backend translation-pipeline gate, but it does not independently assess Portuguese meaning. Windows desktop capture/autosave and macOS runtime gates remain outstanding, and the ten anonymous clusters produced during the source do not establish speaker-label accuracy.
+A one-sentence English-to-pt-BR smoke completed in 0.109 seconds on the validated Windows machine. The v0.9.2 strict wall-clock run then delivered all 18,000 real-time packets, emitted a non-empty pt-BR-labeled payload for all 287 non-empty final segments, skipped one empty final, emitted no warnings or errors, and stopped the decoder and sidecar cleanly with empty stderr. Resident memory peaked at 1,341.5 MiB, while private-memory medians decreased by 50.1 MiB from the first stable window to the last; atomic final-segment latency was 5.835 seconds at p50, 7.985 seconds at p95, and 9.535 seconds maximum. Those latency figures include ASR, diarization, and translation and are not directly comparable to v0.10.0's original-final metric. The historical evaluator returned `passed: true`; the new asynchronous implementation remains In Review until its same-media soak and actual desktop gates run. Windows desktop capture/autosave and macOS runtime gates remain outstanding, and the ten anonymous clusters produced during the source do not establish speaker-label accuracy.
 
 Assist has deterministic protocol, immutable-profile, encrypted-pack revision/limit, content-free preview, oversize fail-closed, context-boundary, cancellation, and renderer-state coverage. With `MEETING_TRANSCRIBER_FAKE=1` and `MEETING_TRANSCRIBER_FAKE_ASSIST=1`, the development fake sidecar emits a finalized segment during the active session after the first bounded audio packet and the fake provider streams suggestion text without a provider network request. These paths are disabled in packaged builds and still require explicit start, a selected audio source, and meeting-scoped consent. Manual Review remains optional because Send preflight freezes the one-use request pack automatically. No live OpenAI API request was made for this milestone, so authentication, billing-account behavior, real network streaming, selected-profile/private-pack behavior against the hosted model, model quality, and provider-side latency remain unverified. The 20-second timeout is an enforced request bound, not a measured provider-latency guarantee. OS-encrypted private-context behavior and the broader Assist runtime also remain unverified on actual macOS hardware.
 

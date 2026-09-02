@@ -1358,10 +1358,18 @@ function handleBackendEvent(event) {
     return;
   }
 
+  if (event.type === "segment_translation") {
+    if (!eventGate.accepts(event)) return;
+    if (transcript.reconcile(event)) renderTranscript();
+    return;
+  }
+
   if (event.type === "warning" || event.type === "error") {
     const issue = describeBackendIssue(event);
     if (event.code === "translation_unavailable") {
       setTranslationRuntimeState("original_only");
+      showTranslationWarning(issue.message);
+    } else if (event.code === "translation_backpressure") {
       showTranslationWarning(issue.message);
     } else {
       showAlert(issue.message, event.type === "warning" ? "warning" : "error");
@@ -4357,6 +4365,11 @@ function describeBackendIssue(event) {
   if (event.code === "translation_unavailable") {
     return {
       message: "Brazilian Portuguese translation is unavailable for this meeting. Original English will continue. Translation will be retried next time."
+    };
+  }
+  if (event.code === "translation_backpressure") {
+    return {
+      message: "Some Brazilian Portuguese translations were skipped because translation could not keep up. Original English transcription will continue."
     };
   }
   if (event.type === "warning") {

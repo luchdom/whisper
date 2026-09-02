@@ -24,6 +24,17 @@ function transcriptEvent(type, overrides = {}) {
   };
 }
 
+function translationEvent(overrides = {}) {
+  return {
+    type: "segment_translation",
+    segment_id: "segment-1",
+    segment_revision: 1,
+    translated_text: "Trecho traduzido",
+    translated_language: "pt-BR",
+    ...overrides
+  };
+}
+
 test("a final revision replaces its partial in place and cannot be downgraded", () => {
   const store = new TranscriptStore();
   assert.equal(store.reconcile(transcriptEvent("partial_transcript")), true);
@@ -184,6 +195,45 @@ test("bilingual finals reconcile atomically and export original first with Markd
   assert.equal(restored.getSpeakerAlias("speaker-a"), "Alex *Lead*");
 });
 
+test("an asynchronous translation updates only its exact finalized revision", () => {
+  const store = new TranscriptStore();
+  assert.equal(store.reconcile(translationEvent()), false, "orphan translations are ignored");
+  store.reconcile(transcriptEvent("partial_transcript"));
+  assert.equal(store.reconcile(translationEvent()), false, "drafts cannot receive translations");
+  store.reconcile(transcriptEvent("final_segment", {
+    revision: 2,
+    language: "en",
+    text: "Final phrase"
+  }));
+
+  assert.equal(store.reconcile(translationEvent({ segment_revision: 1 })), false, "stale translations are ignored");
+  assert.equal(store.reconcile(translationEvent({ segment_revision: 3 })), false, "future translations are ignored");
+  assert.equal(store.reconcile(translationEvent({
+    segment_revision: 2,
+    translated_text: "Frase final"
+  })), true);
+  assert.equal(store.reconcile(translationEvent({
+    segment_revision: 2,
+    translated_text: "Duplicada"
+  })), false, "duplicate translations are ignored");
+
+  const segment = store.getAll()[0];
+  assert.equal(segment.text, "Final phrase");
+  assert.equal(segment.revision, 2);
+  assert.equal(segment.translated_text, "Frase final");
+  assert.match(store.toMarkdown(), /> \*\*Brazilian Portuguese:\*\* Frase final/);
+});
+
+test("embedded final translations remain compatible and reject a later duplicate update", () => {
+  const store = new TranscriptStore();
+  store.reconcile(transcriptEvent("final_segment", {
+    translated_text: "Tradução incorporada",
+    translated_language: "pt-BR"
+  }));
+  assert.equal(store.reconcile(translationEvent()), false);
+  assert.equal(store.getAll()[0].translated_text, "Tradução incorporada");
+});
+
 test("translation invariants reject orphan language, wrong target, oversized text, and translated drafts", () => {
   const store = new TranscriptStore();
   assert.throws(() => store.reconcile(transcriptEvent("final_segment", {
@@ -201,6 +251,9 @@ test("translation invariants reject orphan language, wrong target, oversized tex
     translated_text: "Texto",
     translated_language: "pt-BR"
   })), /bounded and final/);
+  assert.throws(() => store.reconcile(translationEvent({ translated_text: "" })), /non-empty and bounded/);
+  assert.throws(() => store.reconcile(translationEvent({ segment_revision: -1 })), /non-negative integer/);
+  assert.throws(() => store.reconcile(translationEvent({ translated_language: "pt" })), /must be pt-BR/);
 });
 
 test("snapshot and restore preserve isolated segments and renamed aliases across a failed retry", () => {

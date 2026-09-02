@@ -70,7 +70,20 @@ export class TranscriptStore {
   }
 
   reconcile(event) {
-    if (!event || !["partial_transcript", "final_segment"].includes(event.type)) return false;
+    if (!event) return false;
+    if (event.type === "segment_translation") {
+      const incoming = normalizeTranslation(event);
+      const current = this.segments.get(incoming.segmentId);
+      if (!current?.final || current.revision !== incoming.segmentRevision) return false;
+      if (current.translated_text !== null && current.translated_text !== undefined) return false;
+      this.segments.set(incoming.segmentId, {
+        ...current,
+        translated_text: incoming.translatedText,
+        translated_language: incoming.translatedLanguage
+      });
+      return true;
+    }
+    if (!["partial_transcript", "final_segment"].includes(event.type)) return false;
     const incoming = normalizeSegment(event.segment, event.type);
     const current = this.segments.get(incoming.id);
 
@@ -209,6 +222,29 @@ function normalizeSegment(segment, eventType) {
     speaker_id: segment.speaker_id ?? null,
     translated_text: translatedText,
     translated_language: translatedLanguage
+  };
+}
+
+function normalizeTranslation(event) {
+  if (typeof event.segment_id !== "string" || event.segment_id.trim().length === 0) {
+    throw new TypeError("Translation segment ID must be a non-empty string.");
+  }
+  if (!Number.isSafeInteger(event.segment_revision) || event.segment_revision < 0) {
+    throw new TypeError("Translation segment revision must be a non-negative integer.");
+  }
+  if (typeof event.translated_text !== "string"
+    || event.translated_text.trim().length === 0
+    || event.translated_text.length > 20_000) {
+    throw new TypeError("Translated text must be non-empty and bounded.");
+  }
+  if (event.translated_language !== "pt-BR") {
+    throw new TypeError("Translated language must be pt-BR.");
+  }
+  return {
+    segmentId: event.segment_id,
+    segmentRevision: event.segment_revision,
+    translatedText: event.translated_text,
+    translatedLanguage: event.translated_language
   };
 }
 

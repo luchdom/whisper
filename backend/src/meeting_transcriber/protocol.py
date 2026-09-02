@@ -195,6 +195,8 @@ def serialize_event(event: Mapping[str, Any]) -> str:
         raise ProtocolError("invalid_event", "Event must have a non-empty type")
     if event_type in {"partial_transcript", "final_segment"}:
         _validate_segment_event(event_type, event)
+    elif event_type == "segment_translation":
+        _validate_segment_translation_event(event)
     return json.dumps(dict(event), ensure_ascii=False, separators=(",", ":"))
 
 
@@ -206,6 +208,28 @@ def segment_event(
     payload = asdict(segment)
     event: dict[str, object] = {"type": event_type, "session_id": session_id, "segment": payload}
     _validate_segment_event(event_type, event)
+    return event
+
+
+def segment_translation_event(
+    session_id: str,
+    segment_id: str,
+    segment_revision: int,
+    translated_text: str,
+    *,
+    translated_language: Literal["pt-BR"] = "pt-BR",
+) -> dict[str, object]:
+    """Build a revision-scoped translation update for an emitted final segment."""
+
+    event: dict[str, object] = {
+        "type": "segment_translation",
+        "session_id": session_id,
+        "segment_id": segment_id,
+        "segment_revision": segment_revision,
+        "translated_text": translated_text,
+        "translated_language": translated_language,
+    }
+    _validate_segment_translation_event(event)
     return event
 
 
@@ -238,6 +262,48 @@ def _validate_segment_event(event_type: str, event: Mapping[str, Any]) -> None:
             raise ValueError("translated_language must be 'pt-BR' when translated_text is present")
     except ValueError as exc:
         raise ProtocolError("invalid_event", str(exc)) from exc
+
+
+def _validate_segment_translation_event(event: Mapping[str, Any]) -> None:
+    session_id = event.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip() or "\x00" in session_id:
+        raise ProtocolError(
+            "invalid_event",
+            "Translation event requires a non-empty session_id",
+        )
+    segment_id = event.get("segment_id")
+    if (
+        not isinstance(segment_id, str)
+        or not segment_id.strip()
+        or len(segment_id) > 256
+        or "\x00" in segment_id
+    ):
+        raise ProtocolError(
+            "invalid_event",
+            "Translation event requires a valid segment_id",
+        )
+    segment_revision = event.get("segment_revision")
+    if (
+        isinstance(segment_revision, bool)
+        or not isinstance(segment_revision, int)
+        or segment_revision < 0
+    ):
+        raise ProtocolError(
+            "invalid_event",
+            "Translation event requires a non-negative segment_revision",
+        )
+    translated_text = event.get("translated_text")
+    try:
+        _validate_text_field(translated_text, "Translated segment text", nullable=False)
+    except ValueError as exc:
+        raise ProtocolError("invalid_event", str(exc)) from exc
+    if not translated_text.strip():
+        raise ProtocolError("invalid_event", "Translated segment text must not be empty")
+    if event.get("translated_language") != "pt-BR":
+        raise ProtocolError(
+            "invalid_event",
+            "Translation event translated_language must be 'pt-BR'",
+        )
 
 
 def _validate_text_field(value: object, label: str, *, nullable: bool) -> None:

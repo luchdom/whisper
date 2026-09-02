@@ -351,6 +351,12 @@ export function createOverlayController({
       emitStatus();
       return true;
     }
+    if (event.type === "segment_translation") {
+      if (!activeSessionId || event.session_id !== activeSessionId) return false;
+      if (!ingestSegmentTranslation(event)) return false;
+      emitStatus();
+      return true;
+    }
     if (event.type === "warning" || event.type === "error") {
       latestMeetingIssue = createMeetingIssue(event);
       emitStatus();
@@ -636,6 +642,22 @@ export function createOverlayController({
     return true;
   }
 
+  function ingestSegmentTranslation(event) {
+    const key = boundText(event.segment_id, 256).trim();
+    if (!key
+      || !Number.isSafeInteger(event.segment_revision)
+      || event.segment_revision < 0
+      || event.translated_language !== "pt-BR") return false;
+    const translation = boundText(event.translated_text, MAX_SEGMENT_CHARS);
+    if (!translation.trim()) return false;
+    const existingIndex = finalSegments.findIndex(({ key: segmentKey }) => segmentKey === key);
+    if (existingIndex < 0) return false;
+    const current = finalSegments[existingIndex];
+    if (current.revision !== event.segment_revision || current.translation !== null) return false;
+    finalSegments[existingIndex] = Object.freeze({ ...current, translation });
+    return true;
+  }
+
   function emitStatus() {
     if (destroyed) return;
     const status = getStatus();
@@ -785,6 +807,7 @@ function createMeetingIssue(event) {
     inference_failed: "A local audio segment could not be transcribed. Recording is still running.",
     diarization_unavailable: "Speaker detection is unavailable. Transcription is still running with source labels.",
     translation_unavailable: "Translation is unavailable. Original-language transcription is still running.",
+    translation_backpressure: "Some translations were skipped because translation could not keep up. Original-language transcription is still running.",
     backend_stopped: "The transcription engine stopped. Recording will remain indicated until capture cleanup completes."
   };
   return Object.freeze({

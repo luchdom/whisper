@@ -26,6 +26,7 @@ const EVENT_TYPES = new Set([
   "error",
   "partial_transcript",
   "final_segment",
+  "segment_translation",
   "session_stopped"
 ]);
 
@@ -105,6 +106,29 @@ export function validateBackendEvent(value) {
       type,
       session_id: requireString(event.session_id, "transcript.session_id", 256),
       segment: validateSegment(event.segment, type)
+    };
+  }
+
+  if (type === "segment_translation") {
+    return {
+      type,
+      session_id: requireString(event.session_id, "segment_translation.session_id", 256),
+      segment_id: requireString(event.segment_id, "segment_translation.segment_id", 256),
+      segment_revision: requireInteger(
+        event.segment_revision,
+        "segment_translation.segment_revision",
+        0
+      ),
+      translated_text: requireString(
+        event.translated_text,
+        "segment_translation.translated_text",
+        20_000
+      ),
+      translated_language: requireOneOf(
+        event.translated_language,
+        ["pt-BR"],
+        "segment_translation.translated_language"
+      )
     };
   }
 

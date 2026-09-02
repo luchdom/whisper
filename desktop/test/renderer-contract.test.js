@@ -362,6 +362,24 @@ test("selected settings drive start, successful stop precedes autosave, and fail
   assert.match(app, /node\.removeAttribute\("aria-label"\)/);
 });
 
+test("late translations render without announcing another final or refreshing Assist", async () => {
+  const app = await readFile(new URL("../renderer/app.js", import.meta.url), "utf8");
+  const handler = app.slice(
+    app.indexOf("function handleBackendEvent"),
+    app.indexOf("function renderSession")
+  );
+  const translationBranch = handler.slice(
+    handler.indexOf('if (event.type === "segment_translation")'),
+    handler.indexOf('if (event.type === "warning"')
+  );
+
+  assert.match(translationBranch, /eventGate\.accepts\(event\)/);
+  assert.match(translationBranch, /transcript\.reconcile\(event\)/);
+  assert.match(translationBranch, /renderTranscript\(\)/);
+  assert.doesNotMatch(translationBranch, /announceFinalSegment|scheduleAssistStatusRefresh/);
+  assert.match(handler, /event\.code === "translation_backpressure"[^]*?showTranslationWarning\(issue\.message\)/s);
+});
+
 test("main owns transcript destinations, resets autosave only after backend start, and unlocks after stop failure", async () => {
   const main = await readFile(new URL("../main/index.js", import.meta.url), "utf8");
   const startHandler = main.slice(main.indexOf('ipcMain.handle("meeting:start"'), main.indexOf('ipcMain.handle("meeting:audio"'));

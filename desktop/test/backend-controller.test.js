@@ -216,6 +216,110 @@ test("fake sidecar exercises the same start, audio, stop, and shutdown lifecycle
   }
 });
 
+test("fake sidecar exposes original finals before delayed translation updates", async () => {
+  const controller = new BackendController({
+    backendRoot: path.resolve("backend"),
+    fakeBackendPath: path.resolve("desktop/test/fake-backend.js"),
+    env: {
+      ...process.env,
+      MEETING_TRANSCRIBER_FAKE: "1",
+      MEETING_TRANSCRIBER_FAKE_TRANSLATION_DELAY_MS: "75"
+    }
+  });
+  const events = [];
+  controller.on("event", (event) => events.push(event));
+
+  try {
+    const ready = await controller.startSession({
+      model: "small",
+      language: "en",
+      device: "cpu",
+      compute: "int8",
+      translation: "en_to_pt_br"
+    });
+    const liveFinal = controller.waitForEvent(
+      (event) => event.type === "final_segment" ? { resolve: event } : null,
+      1_000,
+      "The fake backend did not emit original finalized text."
+    );
+    const translationUpdate = controller.waitForEvent(
+      (event) => event.type === "segment_translation" ? { resolve: event } : null,
+      1_000,
+      "The fake backend did not emit a delayed translation update."
+    );
+
+    await controller.sendAudio({
+      track: "system",
+      startMs: 0,
+      endMs: 200,
+      pcm: new Uint8Array(6_400)
+    });
+
+    const original = await liveFinal;
+    assert.equal(original.segment.translated_text ?? null, null);
+    assert.equal(original.segment.translated_language ?? null, null);
+    const translated = await translationUpdate;
+    assert.deepEqual(translated, {
+      type: "segment_translation",
+      session_id: ready.session_id,
+      segment_id: original.segment.id,
+      segment_revision: original.segment.revision,
+      translated_text: "Transcrição local de teste.",
+      translated_language: "pt-BR"
+    });
+    assert.equal(events.indexOf(original) < events.indexOf(translated), true);
+
+    await controller.stopSession();
+    const stoppedIndex = events.findIndex(({ type }) => type === "session_stopped");
+    const acceptedUpdates = events.filter(({ type }) => type === "segment_translation");
+    assert.equal(acceptedUpdates.length, 2);
+    assert.equal(events.indexOf(acceptedUpdates.at(-1)) < stoppedIndex, true);
+  } finally {
+    await controller.shutdown();
+  }
+});
+
+test("fake sidecar drains accepted translation updates during active shutdown", async () => {
+  const controller = new BackendController({
+    backendRoot: path.resolve("backend"),
+    fakeBackendPath: path.resolve("desktop/test/fake-backend.js"),
+    env: {
+      ...process.env,
+      MEETING_TRANSCRIBER_FAKE: "1",
+      MEETING_TRANSCRIBER_FAKE_TRANSLATION_DELAY_MS: "75"
+    }
+  });
+  const events = [];
+  controller.on("event", (event) => events.push(event));
+
+  const ready = await controller.startSession({
+    model: "small",
+    language: "en",
+    device: "cpu",
+    compute: "int8",
+    translation: "en_to_pt_br"
+  });
+  await controller.sendAudio({
+    track: "microphone",
+    startMs: 0,
+    endMs: 200,
+    pcm: new Uint8Array(6_400)
+  });
+  await controller.shutdown();
+
+  const sessionEvents = events.filter(({ session_id }) => session_id === ready.session_id);
+  const translations = sessionEvents.filter(({ type }) => type === "segment_translation");
+  const stoppedIndex = sessionEvents.findIndex(({ type }) => type === "session_stopped");
+  const shutdownIndex = events.findIndex(
+    ({ type, status }) => type === "engine_status" && status === "shutdown"
+  );
+  const stoppedGlobalIndex = events.indexOf(sessionEvents[stoppedIndex]);
+  assert.deepEqual(translations.map(({ segment_revision }) => segment_revision), [2, 3]);
+  assert.equal(sessionEvents.indexOf(translations.at(-1)) < stoppedIndex, true);
+  assert.equal(stoppedGlobalIndex < shutdownIndex, true);
+  assert.equal(events[shutdownIndex].session_id ?? null, null);
+});
+
 test("the controller sends the selected model, language, and diarization fields on start", async () => {
   let child;
   const controller = new BackendController({

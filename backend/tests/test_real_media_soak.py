@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from tools.real_media_soak import (
     EventSummary,
@@ -42,11 +43,26 @@ class RealMediaSoakHelperTests(unittest.TestCase):
             "events": {
                 "stop_reason": "stopped",
                 "nonempty_final_segments": 288,
+                "translated_final_segments": 288,
                 "untranslated_nonempty_finals": 0,
+                "inline_final_translation_violations": 0,
                 "empty_final_translation_violations": 0,
                 "translated_partial_violations": 0,
+                "orphan_translation_update_violations": 0,
+                "translation_revision_mismatch_violations": 0,
+                "duplicate_translation_update_violations": 0,
+                "empty_translation_update_violations": 0,
+                "post_stop_translation_update_violations": 0,
                 "malformed_event_count": 0,
                 "final_latency": {"p95_ms": 6_828.0, "max_ms": 20_022.0},
+                "translation_completion_latency": {
+                    "p95_ms": 9_100.0,
+                    "max_ms": 25_000.0,
+                },
+                "translation_delay_after_final": {
+                    "p95_ms": 2_272.0,
+                    "max_ms": 4_978.0,
+                },
             },
             "memory": {
                 "available": True,
@@ -71,33 +87,130 @@ class RealMediaSoakHelperTests(unittest.TestCase):
             {"count": 3, "p50_ms": 200.0, "p95_ms": 300.0, "max_ms": 300.0},
         )
 
-    def test_event_summary_counts_translation_without_retaining_text(self) -> None:
-        summary = EventSummary(duration_seconds=3_600)
-        summary.set_audio_origin(summary.started_at)
-        summary.consume_line(
-            '{"type":"final_segment","segment":{"end_ms":500,'
-            '"text":"TOP SECRET ORIGINAL","translated_text":"TOP SECRET TRANSLATION",'
-            '"translated_language":"pt-BR","speaker_id":"speaker-01"}}'
-        )
+    def test_event_summary_correlates_delayed_translation_without_retaining_text(self) -> None:
+        with patch("tools.real_media_soak.time.monotonic", side_effect=[100.0, 101.2, 102.7]):
+            summary = EventSummary(duration_seconds=3_600)
+            summary.set_audio_origin(100.0)
+            summary.consume_line(
+                '{"type":"final_segment","session_id":"session-a","segment":{'
+                '"id":"segment-a","revision":2,"end_ms":1000,'
+                '"text":"TOP SECRET ORIGINAL","translated_text":null,'
+                '"translated_language":null,"speaker_id":"speaker-01"}}'
+            )
+
+            before_translation = summary.result()
+            self.assertEqual(before_translation["translated_final_segments"], 0)
+            self.assertEqual(
+                before_translation["final_latency"],
+                {"count": 1, "p50_ms": 200.0, "p95_ms": 200.0, "max_ms": 200.0},
+            )
+
+            summary.consume_line(
+                '{"type":"segment_translation","session_id":"session-a",'
+                '"segment_id":"segment-a","segment_revision":2,'
+                '"translated_text":"TOP SECRET TRANSLATION",'
+                '"translated_language":"pt-BR"}'
+            )
 
         result = summary.result()
 
         self.assertEqual(result["nonempty_final_segments"], 1)
         self.assertEqual(result["translated_final_segments"], 1)
+        self.assertEqual(result["untranslated_nonempty_finals"], 0)
         self.assertEqual(result["anonymous_speaker_count"], 1)
+        self.assertEqual(
+            result["translation_completion_latency"],
+            {"count": 1, "p50_ms": 1700.0, "p95_ms": 1700.0, "max_ms": 1700.0},
+        )
+        self.assertEqual(
+            result["translation_delay_after_final"],
+            {"count": 1, "p50_ms": 1500.0, "p95_ms": 1500.0, "max_ms": 1500.0},
+        )
         self.assertNotIn("TOP SECRET", repr(result))
 
-    def test_event_summary_rejects_translation_payload_on_empty_final(self) -> None:
+    def test_event_summary_detects_invalid_translation_correlations(self) -> None:
         summary = EventSummary(duration_seconds=3_600)
         summary.consume_line(
-            '{"type":"final_segment","segment":{"end_ms":500,"text":"",'
-            '"translated_text":"unexpected","translated_language":"pt-BR"}}'
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"orphan","segment_revision":1,'
+            '"translated_text":"orphan translation","translated_language":"pt-BR"}'
+        )
+        summary.consume_line(
+            '{"type":"final_segment","session_id":"session-a","segment":{'
+            '"id":"segment-a","revision":2,"end_ms":500,"text":"original",'
+            '"translated_text":null,"translated_language":null}}'
+        )
+        summary.consume_line(
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"segment-a","segment_revision":1,'
+            '"translated_text":"wrong revision","translated_language":"pt-BR"}'
+        )
+        valid_update = (
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"segment-a","segment_revision":2,'
+            '"translated_text":"translated","translated_language":"pt-BR"}'
+        )
+        summary.consume_line(valid_update)
+        summary.consume_line(valid_update)
+        summary.consume_line(
+            '{"type":"final_segment","session_id":"session-a","segment":{'
+            '"id":"segment-b","revision":1,"end_ms":800,"text":"original",'
+            '"translated_text":null,"translated_language":null}}'
+        )
+        summary.consume_line(
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"segment-b","segment_revision":1,'
+            '"translated_text":"   ","translated_language":"pt-BR"}'
+        )
+        summary.consume_line(
+            '{"type":"final_segment","session_id":"session-a","segment":{'
+            '"id":"segment-c","revision":1,"end_ms":900,"text":"original",'
+            '"translated_text":null,"translated_language":null}}'
+        )
+        summary.consume_line(
+            '{"type":"session_stopped","session_id":"session-a","reason":"stopped"}'
+        )
+        summary.consume_line(
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"segment-c","segment_revision":1,'
+            '"translated_text":"too late","translated_language":"pt-BR"}'
         )
 
         result = summary.result()
 
-        self.assertEqual(result["nonempty_final_segments"], 0)
-        self.assertEqual(result["empty_final_translation_violations"], 1)
+        self.assertEqual(result["translated_final_segments"], 1)
+        self.assertEqual(result["orphan_translation_update_violations"], 1)
+        self.assertEqual(result["translation_revision_mismatch_violations"], 1)
+        self.assertEqual(result["duplicate_translation_update_violations"], 1)
+        self.assertEqual(result["empty_translation_update_violations"], 1)
+        self.assertEqual(result["post_stop_translation_update_violations"], 1)
+        self.assertNotIn("orphan translation", repr(result))
+        self.assertNotIn("wrong revision", repr(result))
+        self.assertNotIn("too late", repr(result))
+
+    def test_event_summary_rejects_inline_or_empty_final_translation(self) -> None:
+        summary = EventSummary(duration_seconds=3_600)
+        summary.consume_line(
+            '{"type":"final_segment","session_id":"session-a","segment":{'
+            '"id":"segment-a","revision":1,"end_ms":500,"text":"original",'
+            '"translated_text":"inline","translated_language":"pt-BR"}}'
+        )
+        summary.consume_line(
+            '{"type":"final_segment","session_id":"session-a","segment":{'
+            '"id":"segment-b","revision":1,"end_ms":500,"text":"",'
+            '"translated_text":"unexpected","translated_language":"pt-BR"}}'
+        )
+        summary.consume_line(
+            '{"type":"segment_translation","session_id":"session-a",'
+            '"segment_id":"segment-b","segment_revision":1,'
+            '"translated_text":"unexpected update","translated_language":"pt-BR"}'
+        )
+
+        result = summary.result()
+
+        self.assertEqual(result["inline_final_translation_violations"], 1)
+        self.assertEqual(result["empty_final_translation_violations"], 2)
+        self.assertEqual(result["translated_final_segments"], 0)
 
     def test_release_acceptance_requires_complete_shutdown_memory_and_pacing(self) -> None:
         passing = self.passing_release_result()
@@ -155,6 +268,38 @@ class RealMediaSoakHelperTests(unittest.TestCase):
             },
         )
 
+        invalid_updates = self.passing_release_result()
+        invalid_events = dict(invalid_updates["events"])  # type: ignore[arg-type]
+        invalid_events.update(
+            {
+                "untranslated_nonempty_finals": 1,
+                "translated_final_segments": 287,
+                "inline_final_translation_violations": 1,
+                "empty_final_translation_violations": 1,
+                "translated_partial_violations": 1,
+                "orphan_translation_update_violations": 1,
+                "translation_revision_mismatch_violations": 1,
+                "duplicate_translation_update_violations": 1,
+                "empty_translation_update_violations": 1,
+                "post_stop_translation_update_violations": 1,
+            }
+        )
+        invalid_updates["events"] = invalid_events
+        self.assertEqual(
+            set(_acceptance_failures(invalid_updates, release_soak=True)),
+            {
+                "translation_payload_missing",
+                "inline_final_translation_present",
+                "empty_final_translation_present",
+                "partial_translation_present",
+                "orphan_translation_update_present",
+                "translation_revision_mismatch_present",
+                "duplicate_translation_update_present",
+                "empty_translation_update_present",
+                "post_stop_translation_update_present",
+            },
+        )
+
     def test_smoke_scope_does_not_claim_release_memory_evidence(self) -> None:
         smoke = self.passing_release_result()
         smoke["memory"] = {"available": False, "sample_count": 0}
@@ -176,13 +321,21 @@ class RealMediaSoakHelperTests(unittest.TestCase):
 
     def test_critical_code_filter_uses_only_safe_aggregate_codes(self) -> None:
         result = {
-            "warning_codes": {"translation_unavailable": 1, "other": 1},
+            "warning_codes": {
+                "translation_unavailable": 1,
+                "translation_backpressure": 1,
+                "other": 1,
+            },
             "error_codes": {"inference_backpressure": 1},
         }
 
         self.assertEqual(
             _critical_codes(result),
-            {"translation_unavailable", "inference_backpressure"},
+            {
+                "translation_unavailable",
+                "translation_backpressure",
+                "inference_backpressure",
+            },
         )
 
     def test_zero_start_omits_seek_that_discards_opus_priming_samples(self) -> None:

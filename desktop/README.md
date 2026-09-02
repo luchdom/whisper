@@ -4,7 +4,7 @@ This Electron client captures meeting audio and/or the microphone only after the
 
 Capture is intentionally overt. A native tray can hide the window, but it always retains a symbolic recording indicator, elapsed-time status, and Stop action while capture is active. Assistance is a separate explicit action; there is no hidden recording, automatic person naming, or audio archive.
 
-Current source release: **v0.9.2**.
+Current source release: **v0.10.0**.
 
 ## Requirements
 
@@ -212,6 +212,8 @@ Select a speaker label in the transcript to rename it. Enter commits, Escape can
 The first version is provisional turn-level clustering. It can merge similar voices, split one voice into multiple labels, and cannot reliably separate overlap or a no-pause handoff. If the speaker model cannot load, one warning is shown and transcription continues with the truthful **Meeting audio** source label.
 
 ## Transcript saving
+
+Local English-to-Brazilian-Portuguese translation is opt in and currently available on Windows x64. The original finalized phrase appears as soon as ASR and speaker assignment finish. Translation then runs on a separate bounded worker and enriches that exact transcript row when ready; it does not create a second final, alter the canonical English, or advance Copilot/debrief context. Translation failure or backlog cannot stop original transcription. Stop waits for accepted translation updates before automatic saving, so the available bilingual text is included in the file.
 
 Open **Settings** to choose a default transcript folder. The native directory picker and every file write are owned by Electron's main process. The sandboxed renderer can display the selected path, but cannot supply an arbitrary path or access the filesystem directly.
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 import io
+from queue import Full, Queue
 import threading
 import uuid
 from typing import TextIO
@@ -24,6 +26,7 @@ from .protocol import (
     issue_event,
     parse_command,
     segment_event,
+    segment_translation_event,
     serialize_event,
 )
 from .queueing import CoalescingJobQueue, DEFAULT_MAX_BUFFERED_PCM_BYTES, InferenceBackpressureError
@@ -40,6 +43,16 @@ from .translation import (
 EventSink = Callable[[dict[str, object]], None]
 DiarizerFactory = Callable[[EngineSettings], SpeakerDiarizer]
 TranslatorFactory = Callable[[EngineSettings], TranslatorProtocol]
+DEFAULT_MAX_PENDING_TRANSLATIONS = 32
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationJob:
+    session_generation: int
+    session_id: str
+    segment_id: str
+    segment_revision: int
+    text: str
 
 
 class TranscriptionService:
@@ -51,9 +64,12 @@ class TranscriptionService:
         segmentation_config: SegmentationConfig | None = None,
         session_id_factory: Callable[[], str] | None = None,
         max_inference_pcm_bytes: int = DEFAULT_MAX_BUFFERED_PCM_BYTES,
+        max_pending_translations: int = DEFAULT_MAX_PENDING_TRANSLATIONS,
         diarizer_factory: DiarizerFactory | None = None,
         translator_factory: TranslatorFactory | None = None,
     ) -> None:
+        if max_pending_translations <= 0:
+            raise ValueError("max_pending_translations must be positive")
         self.engine = engine
         self.event_sink = event_sink
         self.settings = EngineSettings()
@@ -77,6 +93,13 @@ class TranscriptionService:
         self._translator_key: tuple[str, str | None] | None = None
         self._translation_available = False
         self._translation_warning_emitted = False
+        self._translation_backpressure_warning_emitted = False
+        self._translation_queue: Queue[_TranslationJob | None] = Queue(
+            maxsize=max_pending_translations
+        )
+        self._translation_state_lock = threading.Lock()
+        self._session_generation = 0
+        self._final_segment_revisions: dict[tuple[str, str], int] = {}
         self._session_overloaded = False
         self._final_inference_failed = False
         self._shutdown = False
@@ -85,6 +108,12 @@ class TranscriptionService:
             progress_setter(self._emit_model_progress)
         self._worker = threading.Thread(target=self._worker_loop, name="transcription-worker", daemon=True)
         self._worker.start()
+        self._translation_worker = threading.Thread(
+            target=self._translation_worker_loop,
+            name="translation-worker",
+            daemon=True,
+        )
+        self._translation_worker.start()
 
     @property
     def active(self) -> bool:
@@ -119,6 +148,9 @@ class TranscriptionService:
         self.engine.configure(self.settings)
         self._engine_ready = False
         self._session_id = self.session_id_factory()
+        with self._translation_state_lock:
+            self._session_generation += 1
+            self._final_segment_revisions.clear()
         self._emit_status("loading")
         try:
             # Lazy means the heavy model is not imported or initialized until a
@@ -139,6 +171,7 @@ class TranscriptionService:
         self._engine_ready = True
         self._prepare_diarization()
         self._prepare_translation()
+        self._translation_backpressure_warning_emitted = False
         self._session_overloaded = False
         self._final_inference_failed = False
         self._segmenter = UtteranceSegmenter(self._session_id, self.segmentation_config)
@@ -198,6 +231,7 @@ class TranscriptionService:
         if not self._session_overloaded:
             self._enqueue(self._segmenter.flush())
         self.queue.join()
+        self._translation_queue.join()
         self._emit_status("flushed")
 
     def stop(self) -> None:
@@ -208,6 +242,7 @@ class TranscriptionService:
         if not self._session_overloaded:
             self._enqueue(self._segmenter.flush())
         self.queue.join()
+        self._translation_queue.join()
         if self._session_overloaded:
             stop_reason = "inference_backpressure"
         elif self._final_inference_failed:
@@ -222,6 +257,8 @@ class TranscriptionService:
         self._diarization_available = False
         self._translation_available = False
         self._diarizer.reset(None)
+        with self._translation_state_lock:
+            self._final_segment_revisions.clear()
         self.event_sink({"type": "session_stopped", "session_id": session_id, "reason": stop_reason})
 
     def shutdown(self) -> None:
@@ -231,6 +268,9 @@ class TranscriptionService:
             self.stop()
         self.queue.close()
         self._worker.join()
+        self._translation_queue.join()
+        self._translation_queue.put(None)
+        self._translation_worker.join()
         self.engine.close()
         self._diarizer.close()
         self._translator.close()
@@ -272,7 +312,7 @@ class TranscriptionService:
                     self._emit_status("ready")
                 result = self.engine.transcribe(job, self.settings.language)
                 speaker_id = self._speaker_for(job)
-                translated_text = self._translation_for(job, result)
+                translation_source = self._translation_source_for(job, result)
                 segment = SegmentPayload(
                     id=job.segment_id,
                     revision=job.revision,
@@ -284,11 +324,16 @@ class TranscriptionService:
                     final=job.final,
                     language=result.language,
                     speaker_id=speaker_id,
-                    translated_text=translated_text,
-                    translated_language=TRANSLATED_LANGUAGE if translated_text is not None else None,
+                    translated_text=None,
+                    translated_language=None,
                 )
                 event_type = "final_segment" if job.final else "partial_transcript"
                 self.event_sink(segment_event(event_type, job.session_id, segment))
+                if job.final:
+                    with self._translation_state_lock:
+                        self._final_segment_revisions[(job.session_id, job.segment_id)] = job.revision
+                if translation_source is not None:
+                    self._enqueue_translation(job, translation_source)
             except Exception:  # Keep one inference failure from killing the sidecar.
                 self._engine_ready = False
                 if job.final:
@@ -303,6 +348,39 @@ class TranscriptionService:
                 )
             finally:
                 self.queue.task_done(job)
+
+    def _translation_worker_loop(self) -> None:
+        while True:
+            job = self._translation_queue.get()
+            if job is None:
+                self._translation_queue.task_done()
+                return
+            try:
+                if not self._translation_job_is_current(job) or not self._translation_available:
+                    continue
+                translated_text = self._translator.translate(job.text)
+                if (
+                    not isinstance(translated_text, str)
+                    or not translated_text.strip()
+                    or len(translated_text) > MAX_SEGMENT_TEXT_CHARS
+                    or "\x00" in translated_text
+                ):
+                    raise ValueError("The translated text is invalid")
+                if not self._translation_job_is_current(job):
+                    continue
+                self.event_sink(
+                    segment_translation_event(
+                        job.session_id,
+                        job.segment_id,
+                        job.segment_revision,
+                        translated_text,
+                        translated_language=TRANSLATED_LANGUAGE,
+                    )
+                )
+            except Exception:
+                self._emit_translation_unavailable()
+            finally:
+                self._translation_queue.task_done()
 
     def _prepare_diarization(self) -> None:
         self._diarization_warning_emitted = False
@@ -377,7 +455,7 @@ class TranscriptionService:
         except Exception:
             self._emit_translation_unavailable()
 
-    def _translation_for(self, job: InferenceJob, result: object) -> str | None:
+    def _translation_source_for(self, job: InferenceJob, result: object) -> str | None:
         if (
             not job.final
             or self.settings.translation != "en_to_pt_br"
@@ -394,19 +472,47 @@ class TranscriptionService:
         # otherwise healthy translator for the rest of a long meeting.
         if not isinstance(text, str) or not text.strip():
             return None
+        return text
+
+    def _enqueue_translation(self, job: InferenceJob, text: str) -> None:
+        with self._translation_state_lock:
+            session_generation = self._session_generation
+        translation_job = _TranslationJob(
+            session_generation=session_generation,
+            session_id=job.session_id,
+            segment_id=job.segment_id,
+            segment_revision=job.revision,
+            text=text,
+        )
         try:
-            translated_text = self._translator.translate(text)
-            if (
-                not isinstance(translated_text, str)
-                or not translated_text.strip()
-                or len(translated_text) > MAX_SEGMENT_TEXT_CHARS
-                or "\x00" in translated_text
-            ):
-                raise ValueError("The translated text is invalid")
-            return translated_text
-        except Exception:
-            self._emit_translation_unavailable()
-            return None
+            self._translation_queue.put_nowait(translation_job)
+        except Full:
+            self._emit_translation_backpressure(job.segment_id)
+
+    def _translation_job_is_current(self, job: _TranslationJob) -> bool:
+        with self._translation_state_lock:
+            return (
+                job.session_generation == self._session_generation
+                and job.session_id == self._session_id
+                and self._final_segment_revisions.get((job.session_id, job.segment_id))
+                == job.segment_revision
+            )
+
+    def _emit_translation_backpressure(self, segment_id: str) -> None:
+        if self._translation_backpressure_warning_emitted:
+            return
+        self._translation_backpressure_warning_emitted = True
+        self._emit_issue(
+            "warning",
+            source="transcription",
+            code="translation_backpressure",
+            message=(
+                "Brazilian Portuguese translation is falling behind; original transcription "
+                "will continue and some translations may be unavailable"
+            ),
+            recoverable=True,
+            segment_id=segment_id,
+        )
 
     def _translation_is_eligible(self, language: str | None, probability: float | None) -> bool:
         if self.settings.language == "en":
@@ -492,6 +598,7 @@ class JsonlApplication:
         segmentation_config: SegmentationConfig | None = None,
         session_id_factory: Callable[[], str] | None = None,
         max_inference_pcm_bytes: int = DEFAULT_MAX_BUFFERED_PCM_BYTES,
+        max_pending_translations: int = DEFAULT_MAX_PENDING_TRANSLATIONS,
         diarizer_factory: DiarizerFactory | None = None,
         translator_factory: TranslatorFactory | None = None,
     ) -> None:
@@ -499,6 +606,7 @@ class JsonlApplication:
         self.segmentation_config = segmentation_config
         self.session_id_factory = session_id_factory
         self.max_inference_pcm_bytes = max_inference_pcm_bytes
+        self.max_pending_translations = max_pending_translations
         self.diarizer_factory = diarizer_factory
         self.translator_factory = translator_factory
 
@@ -517,6 +625,7 @@ class JsonlApplication:
             segmentation_config=self.segmentation_config,
             session_id_factory=self.session_id_factory,
             max_inference_pcm_bytes=self.max_inference_pcm_bytes,
+            max_pending_translations=self.max_pending_translations,
             diarizer_factory=self.diarizer_factory,
             translator_factory=self.translator_factory,
         )

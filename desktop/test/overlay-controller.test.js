@@ -154,6 +154,60 @@ test("only actual transcribing reveals without focus and stopped clears stale li
   assert.equal(status.assist.suggestion, null);
 });
 
+test("late translation updates visible overlay text without changing Assist context", async () => {
+  const fixture = createFixture();
+  await fixture.controller.initialize();
+  fixture.controller.beginSession("session-translation");
+  fixture.controller.setMeetingState("transcribing");
+  ingestFinal(fixture.controller, "session-translation", {
+    id: "segment-1",
+    revision: 2,
+    start_ms: 0,
+    end_ms: 100,
+    text: "What should we ship?"
+  });
+  fixture.controller.ingestAssistEvent({
+    type: "assist_started",
+    requestId: "request-1",
+    sessionId: "session-translation",
+    contextRevision: 1,
+    sequence: 1
+  });
+  fixture.controller.ingestAssistEvent({
+    type: "assist_item",
+    requestId: "request-1",
+    sessionId: "session-translation",
+    contextRevision: 1,
+    sequence: 2,
+    channel: "suggestion",
+    text: "Lead with the outcome.",
+    citations: []
+  });
+
+  const translate = (overrides = {}) => fixture.controller.ingestBackendEvent({
+    type: "segment_translation",
+    session_id: "session-translation",
+    segment_id: "segment-1",
+    segment_revision: 2,
+    translated_text: "O que devemos entregar?",
+    translated_language: "pt-BR",
+    ...overrides
+  });
+  assert.equal(translate({ segment_revision: 1 }), false);
+  assert.equal(translate({ segment_revision: 3 }), false);
+  assert.equal(translate({ segment_id: "missing" }), false);
+  assert.equal(translate({ session_id: "other-session" }), false);
+  assert.equal(translate(), true);
+  assert.equal(translate(), false, "duplicate translations are ignored");
+
+  const status = fixture.controller.getStatus();
+  assert.equal(status.meeting.contextRevision, 1);
+  assert.equal(status.meeting.segments[0].translation, "O que devemos entregar?");
+  assert.equal(status.assist.currentContextRevision, 1);
+  assert.equal(status.assist.suggestion.stale, false);
+  assert.equal(status.assist.suggestion.text, "Lead with the outcome.");
+});
+
 test("overlay controls only reveal workspace, focus Copilot, hide, or cancel existing Assist", async () => {
   const fixture = createFixture();
   await fixture.controller.initialize();

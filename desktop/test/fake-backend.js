@@ -9,6 +9,9 @@ let liveFinalEmitted = false;
 let diarization = "off";
 let model = "small";
 let translation = "off";
+let pendingTranslations = 0;
+let stopFinalized = false;
+let shutdownRequested = false;
 
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
@@ -36,6 +39,9 @@ lines.on("line", (line) => {
     diarization = command.diarization === "online" ? "online" : "off";
     model = typeof command.model === "string" ? command.model : "small";
     translation = command.translation === "en_to_pt_br" ? "en_to_pt_br" : "off";
+    pendingTranslations = 0;
+    stopFinalized = false;
+    shutdownRequested = false;
     emit(engineStatus("loading"));
     emit(modelProgress("checking_cache"));
     if (process.env.MEETING_TRANSCRIBER_FAKE_MODEL_DOWNLOAD === "1") {
@@ -96,6 +102,7 @@ lines.on("line", (line) => {
         session_id: sessionId,
         segment: segment(true, command, "Local test transcript.")
       });
+      scheduleTranslation(revision);
     }
     return;
   }
@@ -107,9 +114,9 @@ lines.on("line", (line) => {
   }
 
   if (command.type === "shutdown") {
-    if (active) emit({ type: "session_stopped", session_id: sessionId, reason: "shutdown" });
-    emit(engineStatus("shutdown"));
-    process.exit(0);
+    shutdownRequested = true;
+    if (active) completeStop();
+    else finishShutdown();
   }
 });
 
@@ -145,9 +152,33 @@ function segment(final, packet, text) {
     final,
     language: "en",
     speaker_id: diarization === "online" && packet.track === "system" ? "speaker-01" : null,
-    translated_text: final && translation === "en_to_pt_br" ? "Transcrição local de teste." : null,
-    translated_language: final && translation === "en_to_pt_br" ? "pt-BR" : null
+    translated_text: null,
+    translated_language: null
   };
+}
+
+function scheduleTranslation(segmentRevision) {
+  if (translation !== "en_to_pt_br") return;
+  const targetSessionId = sessionId;
+  pendingTranslations += 1;
+  const delayMs = Number.parseInt(
+    process.env.MEETING_TRANSCRIBER_FAKE_TRANSLATION_DELAY_MS ?? "75",
+    10
+  );
+  setTimeout(() => {
+    if (sessionId === targetSessionId) {
+      emit({
+        type: "segment_translation",
+        session_id: targetSessionId,
+        segment_id: "fake-segment-1",
+        segment_revision: segmentRevision,
+        translated_text: "Transcrição local de teste.",
+        translated_language: "pt-BR"
+      });
+    }
+    pendingTranslations -= 1;
+    finishStopIfDrained();
+  }, Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : 75);
 }
 
 function emit(event) {
@@ -155,7 +186,7 @@ function emit(event) {
 }
 
 function completeStop() {
-  if (!active) return;
+  if (!active || stopFinalized) return;
   if (firstPacket) {
     revision += 1;
     emit({
@@ -163,7 +194,22 @@ function completeStop() {
       session_id: sessionId,
       segment: segment(true, firstPacket, "Local test transcript.")
     });
+    scheduleTranslation(revision);
   }
+  stopFinalized = true;
+  finishStopIfDrained();
+}
+
+function finishStopIfDrained() {
+  if (!active || !stopFinalized || pendingTranslations !== 0) return;
+  const stoppedSessionId = sessionId;
   active = false;
-  emit({ type: "session_stopped", session_id: sessionId, reason: "stopped" });
+  emit({ type: "session_stopped", session_id: stoppedSessionId, reason: "stopped" });
+  sessionId = null;
+  if (shutdownRequested) finishShutdown();
+}
+
+function finishShutdown() {
+  emit(engineStatus("shutdown"));
+  process.exit(0);
 }

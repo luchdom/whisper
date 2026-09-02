@@ -11,6 +11,7 @@ from meeting_transcriber.protocol import (
     StartCommand,
     parse_command,
     segment_event,
+    segment_translation_event,
     serialize_event,
 )
 from tests.helpers import pcm_base64
@@ -157,6 +158,39 @@ class ProtocolTests(unittest.TestCase):
         event = segment_event("final_segment", "session", valid)
         self.assertEqual(event["segment"]["text"], "Original")  # type: ignore[index]
         self.assertEqual(event["segment"]["translated_text"], "Traduzido")  # type: ignore[index]
+
+    def test_serializes_revision_scoped_segment_translation_update(self) -> None:
+        event = segment_translation_event(
+            "session-a",
+            "session-a:system:000001",
+            3,
+            "Texto traduzido",
+        )
+        payload = json.loads(serialize_event(event))
+        self.assertEqual(
+            payload,
+            {
+                "type": "segment_translation",
+                "session_id": "session-a",
+                "segment_id": "session-a:system:000001",
+                "segment_revision": 3,
+                "translated_text": "Texto traduzido",
+                "translated_language": "pt-BR",
+            },
+        )
+
+        invalid_events = (
+            {**event, "session_id": ""},
+            {**event, "segment_id": ""},
+            {**event, "segment_revision": True},
+            {**event, "segment_revision": -1},
+            {**event, "translated_text": ""},
+            {**event, "translated_text": "x" * 20_001},
+            {**event, "translated_language": "pt"},
+        )
+        for invalid in invalid_events:
+            with self.subTest(invalid=invalid), self.assertRaises(ProtocolError):
+                serialize_event(invalid)
 
 
 if __name__ == "__main__":

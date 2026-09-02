@@ -25,6 +25,14 @@ TEST_SEGMENTATION = SegmentationConfig(
     max_utterance_ms=2_000,
 )
 
+FINAL_EVERY_PACKET = SegmentationConfig(
+    vad_rms_threshold=100,
+    pre_roll_ms=100,
+    silence_finalize_ms=100,
+    partial_interval_ms=1_000,
+    max_utterance_ms=100,
+)
+
 
 class BlockingFakeEngine(FakeTranscriptionEngine):
     def __init__(self) -> None:
@@ -141,6 +149,30 @@ class StubTranslator:
     def close(self) -> None:
         self.close_calls += 1
         self.closed = True
+
+
+class BlockingStubTranslator(StubTranslator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.translation_started = threading.Event()
+        self.release_translation = threading.Event()
+        self._in_flight = 0
+        self.max_in_flight = 0
+        self._lock = threading.Lock()
+
+    def translate(self, text: str) -> str:
+        self.translate_calls.append(text)
+        with self._lock:
+            self._in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        self.translation_started.set()
+        try:
+            if not self.release_translation.wait(timeout=5):
+                raise TimeoutError("test translation was not released")
+            return f"Portuguese: {text}"
+        finally:
+            with self._lock:
+                self._in_flight -= 1
 
 
 class StubDiarizer:
@@ -265,7 +297,7 @@ class ServiceTests(unittest.TestCase):
             for event in events
         ))
 
-    def test_translation_is_atomic_with_the_original_final_segment(self) -> None:
+    def test_translation_is_emitted_after_the_original_final_segment(self) -> None:
         events: list[dict[str, object]] = []
         translator = StubTranslator(translated_text="Tradução em português")
         service = TranscriptionService(
@@ -297,8 +329,15 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(finals), 1)
         segment = finals[0]["segment"]
         self.assertEqual(segment["text"], "Original English")  # type: ignore[index]
-        self.assertEqual(segment["translated_text"], "Tradução em português")  # type: ignore[index]
-        self.assertEqual(segment["translated_language"], "pt-BR")  # type: ignore[index]
+        self.assertIsNone(segment["translated_text"])  # type: ignore[index]
+        self.assertIsNone(segment["translated_language"])  # type: ignore[index]
+        translation = next(event for event in events if event["type"] == "segment_translation")
+        self.assertEqual(translation["session_id"], "translated-session")
+        self.assertEqual(translation["segment_id"], segment["id"])  # type: ignore[index]
+        self.assertEqual(translation["segment_revision"], segment["revision"])  # type: ignore[index]
+        self.assertEqual(translation["translated_text"], "Tradução em português")
+        self.assertEqual(translation["translated_language"], "pt-BR")
+        self.assertLess(events.index(finals[0]), events.index(translation))
         self.assertEqual(translator.translate_calls, ["Original English"])
         ready_index = next(
             index
@@ -311,6 +350,212 @@ class ServiceTests(unittest.TestCase):
             ["checking_translation_cache", "initializing_translation"],
         )
         self.assertLess(events.index(progress[-1]), ready_index)
+
+    def test_blocked_translation_does_not_delay_current_or_subsequent_originals(self) -> None:
+        events: list[dict[str, object]] = []
+        two_originals_emitted = threading.Event()
+        translator = BlockingStubTranslator()
+
+        def emit(event: dict[str, object]) -> None:
+            events.append(event)
+            if len([item for item in events if item["type"] == "final_segment"]) >= 2:
+                two_originals_emitted.set()
+
+        service = TranscriptionService(
+            SequenceLanguageResultEngine(["First English phrase", "Second English phrase"]),
+            emit,
+            segmentation_config=FINAL_EVERY_PACKET,
+            session_id_factory=lambda: "nonblocking-session",
+            translator_factory=lambda _settings: translator,
+        )
+        try:
+            service.start(
+                {
+                    "translation": "en_to_pt_br",
+                    "translation_model": "C:/app-data/models/translation",
+                    "language": "en",
+                }
+            )
+            service.audio(AudioCommand("system", 0, 100, pcm(100)))
+            self.assertTrue(translator.translation_started.wait(timeout=2))
+            service.audio(AudioCommand("system", 100, 200, pcm(100)))
+            self.assertTrue(two_originals_emitted.wait(timeout=2))
+
+            finals = [event for event in events if event["type"] == "final_segment"]
+            self.assertEqual(
+                [event["segment"]["text"] for event in finals],  # type: ignore[index]
+                ["First English phrase", "Second English phrase"],
+            )
+            self.assertTrue(all(event["segment"]["translated_text"] is None for event in finals))  # type: ignore[index]
+            self.assertFalse(any(event["type"] == "segment_translation" for event in events))
+
+            translator.release_translation.set()
+            service.stop()
+
+            translations = [event for event in events if event["type"] == "segment_translation"]
+            self.assertEqual(
+                [event["translated_text"] for event in translations],
+                [
+                    "Portuguese: First English phrase",
+                    "Portuguese: Second English phrase",
+                ],
+            )
+            self.assertEqual(translator.max_in_flight, 1)
+            stop_index = next(
+                index for index, event in enumerate(events) if event["type"] == "session_stopped"
+            )
+            self.assertTrue(all(events.index(event) < stop_index for event in translations))
+        finally:
+            translator.release_translation.set()
+            service.shutdown()
+
+    def test_flush_waits_for_accepted_translation_before_reporting_flushed(self) -> None:
+        events: list[dict[str, object]] = []
+        translator = BlockingStubTranslator()
+        service = TranscriptionService(
+            LanguageResultEngine(),
+            events.append,
+            segmentation_config=FINAL_EVERY_PACKET,
+            session_id_factory=lambda: "flush-session",
+            translator_factory=lambda _settings: translator,
+        )
+        flush_finished = threading.Event()
+
+        def flush() -> None:
+            service.flush()
+            flush_finished.set()
+
+        try:
+            service.start(
+                {
+                    "translation": "en_to_pt_br",
+                    "translation_model": "C:/app-data/models/translation",
+                    "language": "en",
+                }
+            )
+            service.audio(AudioCommand("system", 0, 100, pcm(100)))
+            self.assertTrue(translator.translation_started.wait(timeout=2))
+            flush_thread = threading.Thread(target=flush)
+            flush_thread.start()
+            self.assertFalse(flush_finished.wait(timeout=0.1))
+
+            translator.release_translation.set()
+            self.assertTrue(flush_finished.wait(timeout=2))
+            flush_thread.join(timeout=2)
+
+            translation_index = next(
+                index for index, event in enumerate(events) if event["type"] == "segment_translation"
+            )
+            flushed_index = next(
+                index
+                for index, event in enumerate(events)
+                if event["type"] == "engine_status" and event["status"] == "flushed"
+            )
+            self.assertLess(translation_index, flushed_index)
+            service.stop()
+        finally:
+            translator.release_translation.set()
+            service.shutdown()
+
+    def test_translation_backpressure_skips_only_overflow_and_warns_once(self) -> None:
+        events: list[dict[str, object]] = []
+        four_originals_emitted = threading.Event()
+        backpressure_emitted = threading.Event()
+        first_batch_translated = threading.Event()
+        translator = BlockingStubTranslator()
+
+        def emit(event: dict[str, object]) -> None:
+            events.append(event)
+            if len([item for item in events if item["type"] == "final_segment"]) >= 4:
+                four_originals_emitted.set()
+            if event.get("code") == "translation_backpressure":
+                backpressure_emitted.set()
+            if len([item for item in events if item["type"] == "segment_translation"]) >= 2:
+                first_batch_translated.set()
+
+        service = TranscriptionService(
+            SequenceLanguageResultEngine(["One", "Two", "Three", "Four", "Five"]),
+            emit,
+            segmentation_config=FINAL_EVERY_PACKET,
+            session_id_factory=lambda: "bounded-translation-session",
+            max_pending_translations=1,
+            translator_factory=lambda _settings: translator,
+        )
+        try:
+            service.start(
+                {
+                    "translation": "en_to_pt_br",
+                    "translation_model": "C:/app-data/models/translation",
+                    "language": "en",
+                }
+            )
+            service.audio(AudioCommand("system", 0, 100, pcm(100)))
+            self.assertTrue(translator.translation_started.wait(timeout=2))
+            for start_ms in (100, 200, 300):
+                service.audio(AudioCommand("system", start_ms, start_ms + 100, pcm(100)))
+            self.assertTrue(four_originals_emitted.wait(timeout=2))
+            self.assertTrue(backpressure_emitted.wait(timeout=2))
+            self.assertFalse(any(event["type"] == "segment_translation" for event in events))
+
+            translator.release_translation.set()
+            self.assertTrue(first_batch_translated.wait(timeout=2))
+            service.audio(AudioCommand("system", 400, 500, pcm(100)))
+            service.stop()
+
+            finals = [event for event in events if event["type"] == "final_segment"]
+            self.assertEqual([event["segment"]["text"] for event in finals], ["One", "Two", "Three", "Four", "Five"])  # type: ignore[index]
+            warnings = [event for event in events if event.get("code") == "translation_backpressure"]
+            self.assertEqual(len(warnings), 1)
+            self.assertTrue(warnings[0]["recoverable"])
+            self.assertNotIn("One", warnings[0]["message"])
+            self.assertNotIn("C:/", warnings[0]["message"])
+            translations = [event for event in events if event["type"] == "segment_translation"]
+            self.assertEqual(
+                [event["translated_text"] for event in translations],
+                ["Portuguese: One", "Portuguese: Two", "Portuguese: Five"],
+            )
+            self.assertEqual(translator.translate_calls, ["One", "Two", "Five"])
+            self.assertEqual(translator.max_in_flight, 1)
+        finally:
+            translator.release_translation.set()
+            service.shutdown()
+
+    def test_translation_updates_keep_exact_session_and_final_revision(self) -> None:
+        events: list[dict[str, object]] = []
+        translator = StubTranslator()
+        session_ids = iter(("translation-session-a", "translation-session-b"))
+        service = TranscriptionService(
+            SequenceLanguageResultEngine(["First session", "Second session"]),
+            events.append,
+            segmentation_config=FINAL_EVERY_PACKET,
+            session_id_factory=lambda: next(session_ids),
+            translator_factory=lambda _settings: translator,
+        )
+        try:
+            for expected_session in ("translation-session-a", "translation-session-b"):
+                service.start(
+                    {
+                        "translation": "en_to_pt_br",
+                        "translation_model": "C:/app-data/models/translation",
+                        "language": "en",
+                    }
+                )
+                service.audio(AudioCommand("system", 0, 100, pcm(100)))
+                service.stop()
+                session_events = [
+                    event for event in events if event.get("session_id") == expected_session
+                ]
+                final = next(event for event in session_events if event["type"] == "final_segment")
+                translation = next(
+                    event for event in session_events if event["type"] == "segment_translation"
+                )
+                self.assertEqual(translation["segment_id"], final["segment"]["id"])  # type: ignore[index]
+                self.assertEqual(
+                    translation["segment_revision"], final["segment"]["revision"]  # type: ignore[index]
+                )
+                self.assertLess(events.index(final), events.index(translation))
+        finally:
+            service.shutdown()
 
     def test_translation_never_runs_for_partial_segments(self) -> None:
         events: list[dict[str, object]] = []
@@ -345,7 +590,10 @@ class ServiceTests(unittest.TestCase):
         final = next(event for event in events if event["type"] == "final_segment")
         self.assertIsNone(partial["segment"]["translated_text"])  # type: ignore[index]
         self.assertIsNone(partial["segment"]["translated_language"])  # type: ignore[index]
-        self.assertEqual(final["segment"]["translated_text"], "Portuguese translation")  # type: ignore[index]
+        self.assertIsNone(final["segment"]["translated_text"])  # type: ignore[index]
+        translations = [event for event in events if event["type"] == "segment_translation"]
+        self.assertEqual(len(translations), 1)
+        self.assertEqual(translations[0]["segment_id"], final["segment"]["id"])  # type: ignore[index]
         self.assertEqual(translator.translate_calls, ["Original English"])
 
     def test_empty_final_does_not_disable_translation_for_later_speech(self) -> None:
@@ -379,7 +627,10 @@ class ServiceTests(unittest.TestCase):
         finals = [event for event in events if event["type"] == "final_segment"]
         self.assertEqual(len(finals), 2)
         self.assertIsNone(finals[0]["segment"]["translated_text"])  # type: ignore[index]
-        self.assertEqual(finals[1]["segment"]["translated_text"], "Portuguese translation")  # type: ignore[index]
+        self.assertIsNone(finals[1]["segment"]["translated_text"])  # type: ignore[index]
+        translations = [event for event in events if event["type"] == "segment_translation"]
+        self.assertEqual(len(translations), 1)
+        self.assertEqual(translations[0]["segment_id"], finals[1]["segment"]["id"])  # type: ignore[index]
         self.assertEqual(translator.translate_calls, ["Original English"])
         self.assertFalse(any(event.get("code") == "translation_unavailable" for event in events))
 
@@ -427,9 +678,13 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(finals), 2)
         first_segment = finals[0]["segment"]
         second_segment = finals[1]["segment"]
-        self.assertEqual(first_segment["translated_text"], "Portuguese translation")  # type: ignore[index]
+        self.assertIsNone(first_segment["translated_text"])  # type: ignore[index]
         self.assertIsNone(second_segment["translated_text"])  # type: ignore[index]
         self.assertIsNone(second_segment["translated_language"])  # type: ignore[index]
+        translations = [event for event in events if event["type"] == "segment_translation"]
+        self.assertEqual(len(translations), 1)
+        self.assertEqual(translations[0]["session_id"], "translated-session")
+        self.assertEqual(translations[0]["segment_id"], first_segment["id"])  # type: ignore[index]
         self.assertEqual(translator.translate_calls, ["Original English"])
         self.assertEqual(translator.close_calls, 1)
         self.assertFalse(any(event.get("code") == "translation_unavailable" for event in events))

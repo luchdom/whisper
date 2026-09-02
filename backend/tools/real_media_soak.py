@@ -37,6 +37,7 @@ CRITICAL_CODES = frozenset(
         "inference_backpressure",
         "inference_failed",
         "non_monotonic_audio",
+        "translation_backpressure",
         "translation_unavailable",
     }
 )
@@ -87,13 +88,26 @@ class EventSummary:
         self.final_count = 0
         self.nonempty_final_count = 0
         self.translated_final_count = 0
+        self.inline_final_translation_violations = 0
         self.empty_final_translation_violations = 0
         self.translated_partial_count = 0
+        self.orphan_translation_update_violations = 0
+        self.translation_revision_mismatch_violations = 0
+        self.duplicate_translation_update_violations = 0
+        self.empty_translation_update_violations = 0
+        self.post_stop_translation_update_violations = 0
         self.speaker_ids: set[str] = set()
+        self._finals: dict[tuple[str, str, int], tuple[float, int | None, bool]] = {}
+        self._final_revisions: dict[tuple[str, str], set[int]] = {}
+        self._nonempty_finals: set[tuple[str, str, int]] = set()
+        self._translated_finals: set[tuple[str, str, int]] = set()
         self.final_latencies: list[float] = []
         self.first_ten_minute_latencies: list[float] = []
         self.last_ten_minute_latencies: list[float] = []
+        self.translation_completion_latencies: list[float] = []
+        self.translation_delays_after_final: list[float] = []
         self.stop_reason: str | None = None
+        self.stop_received = False
         self.session_id: str | None = None
         self.started_at = time.monotonic()
         self.ready_at: float | None = None
@@ -149,9 +163,12 @@ class EventSummary:
                 target[safe_code] += 1
             elif event_type in {"partial_transcript", "final_segment"}:
                 self._consume_segment(event_type, event, now)
+            elif event_type == "segment_translation":
+                self._consume_translation(event, now)
             elif event_type == "session_stopped":
                 reason = event.get("reason")
                 self.stop_reason = reason if isinstance(reason, str) else "invalid_reason"
+                self.stop_received = True
                 self.stopped.set()
 
     def _consume_segment(self, event_type: str, event: dict[str, Any], received_at: float) -> None:
@@ -160,29 +177,56 @@ class EventSummary:
             self.malformed_event_count += 1
             return
         translated = segment.get("translated_text")
-        translated_nonempty = isinstance(translated, str) and bool(translated.strip())
+        translation_payload_present = (
+            translated is not None or segment.get("translated_language") is not None
+        )
         speaker_id = segment.get("speaker_id")
         if isinstance(speaker_id, str) and speaker_id:
             self.speaker_ids.add(speaker_id)
 
         if event_type == "partial_transcript":
             self.partial_count += 1
-            if translated_nonempty or segment.get("translated_language") is not None:
+            if translation_payload_present:
                 self.translated_partial_count += 1
             return
 
         self.final_count += 1
+        session_id = event.get("session_id")
+        segment_id = segment.get("id")
+        revision = segment.get("revision")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(segment_id, str)
+            or not segment_id
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 0
+        ):
+            self.malformed_event_count += 1
+            return
+
         text_value = segment.get("text")
         nonempty = isinstance(text_value, str) and bool(text_value.strip())
+        key = (session_id, segment_id, revision)
+        end_ms_value = segment.get("end_ms")
+        end_ms = (
+            end_ms_value
+            if isinstance(end_ms_value, int) and not isinstance(end_ms_value, bool)
+            else None
+        )
+        if key not in self._finals:
+            self._finals[key] = (received_at, end_ms, nonempty)
+            self._final_revisions.setdefault((session_id, segment_id), set()).add(revision)
         if nonempty:
-            self.nonempty_final_count += 1
-            if translated_nonempty and segment.get("translated_language") == "pt-BR":
-                self.translated_final_count += 1
-        elif translated_nonempty or segment.get("translated_language") is not None:
+            self._nonempty_finals.add(key)
+            self.nonempty_final_count = len(self._nonempty_finals)
+            if translation_payload_present:
+                self.inline_final_translation_violations += 1
+        elif translation_payload_present:
             self.empty_final_translation_violations += 1
 
-        end_ms = segment.get("end_ms")
-        if self.audio_origin is None or isinstance(end_ms, bool) or not isinstance(end_ms, int):
+        if self.audio_origin is None or end_ms is None:
             return
         latency = received_at - (self.audio_origin + end_ms / 1_000)
         self.final_latencies.append(latency)
@@ -190,6 +234,59 @@ class EventSummary:
             self.first_ten_minute_latencies.append(latency)
         if end_ms >= max(0, self.duration_seconds * 1_000 - 600_000):
             self.last_ten_minute_latencies.append(latency)
+
+    def _consume_translation(self, event: dict[str, Any], received_at: float) -> None:
+        if self.stop_received:
+            self.post_stop_translation_update_violations += 1
+            return
+
+        session_id = event.get("session_id")
+        segment_id = event.get("segment_id")
+        revision = event.get("segment_revision")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(segment_id, str)
+            or not segment_id
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 0
+        ):
+            self.malformed_event_count += 1
+            return
+
+        translated_text = event.get("translated_text")
+        if not isinstance(translated_text, str) or not translated_text.strip():
+            self.empty_translation_update_violations += 1
+            return
+        if event.get("translated_language") != "pt-BR":
+            self.malformed_event_count += 1
+            return
+
+        key = (session_id, segment_id, revision)
+        final = self._finals.get(key)
+        if final is None:
+            if (session_id, segment_id) in self._final_revisions:
+                self.translation_revision_mismatch_violations += 1
+            else:
+                self.orphan_translation_update_violations += 1
+            return
+        if key in self._translated_finals:
+            self.duplicate_translation_update_violations += 1
+            return
+
+        final_received_at, end_ms, nonempty = final
+        if not nonempty:
+            self.empty_final_translation_violations += 1
+            return
+
+        self._translated_finals.add(key)
+        self.translated_final_count = len(self._translated_finals)
+        self.translation_delays_after_final.append(received_at - final_received_at)
+        if self.audio_origin is not None and end_ms is not None:
+            self.translation_completion_latencies.append(
+                received_at - (self.audio_origin + end_ms / 1_000)
+            )
 
     def snapshot(self) -> dict[str, object]:
         with self.lock:
@@ -216,10 +313,26 @@ class EventSummary:
                 "nonempty_final_segments": self.nonempty_final_count,
                 "translated_final_segments": self.translated_final_count,
                 "untranslated_nonempty_finals": (
-                    self.nonempty_final_count - self.translated_final_count
+                    len(self._nonempty_finals - self._translated_finals)
                 ),
+                "inline_final_translation_violations": self.inline_final_translation_violations,
                 "empty_final_translation_violations": self.empty_final_translation_violations,
                 "translated_partial_violations": self.translated_partial_count,
+                "orphan_translation_update_violations": (
+                    self.orphan_translation_update_violations
+                ),
+                "translation_revision_mismatch_violations": (
+                    self.translation_revision_mismatch_violations
+                ),
+                "duplicate_translation_update_violations": (
+                    self.duplicate_translation_update_violations
+                ),
+                "empty_translation_update_violations": (
+                    self.empty_translation_update_violations
+                ),
+                "post_stop_translation_update_violations": (
+                    self.post_stop_translation_update_violations
+                ),
                 "anonymous_speaker_count": len(self.speaker_ids),
                 "stop_reason": self.stop_reason,
                 "malformed_event_count": self.malformed_event_count,
@@ -229,6 +342,12 @@ class EventSummary:
                 ),
                 "last_ten_minutes_final_latency": _latency_summary(
                     self.last_ten_minute_latencies
+                ),
+                "translation_completion_latency": _latency_summary(
+                    self.translation_completion_latencies
+                ),
+                "translation_delay_after_final": _latency_summary(
+                    self.translation_delays_after_final
                 ),
             }
 
@@ -537,16 +656,39 @@ def _acceptance_failures(result: dict[str, object], *, release_soak: bool) -> li
     else:
         if events.get("stop_reason") != "stopped":
             failures.append("clean_stop_missing")
-        if not isinstance(events.get("nonempty_final_segments"), int) or int(
-            events["nonempty_final_segments"]
-        ) <= 0:
+        nonempty_finals = events.get("nonempty_final_segments")
+        valid_nonempty_finals = (
+            isinstance(nonempty_finals, int)
+            and not isinstance(nonempty_finals, bool)
+            and nonempty_finals > 0
+        )
+        if not valid_nonempty_finals:
             failures.append("nonempty_final_missing")
-        if events.get("untranslated_nonempty_finals") != 0:
+        translated_finals = events.get("translated_final_segments")
+        if (
+            not valid_nonempty_finals
+            or not isinstance(translated_finals, int)
+            or isinstance(translated_finals, bool)
+            or translated_finals != nonempty_finals
+            or events.get("untranslated_nonempty_finals") != 0
+        ):
             failures.append("translation_payload_missing")
+        if events.get("inline_final_translation_violations") != 0:
+            failures.append("inline_final_translation_present")
         if events.get("empty_final_translation_violations") != 0:
             failures.append("empty_final_translation_present")
         if events.get("translated_partial_violations") != 0:
             failures.append("partial_translation_present")
+        if events.get("orphan_translation_update_violations") != 0:
+            failures.append("orphan_translation_update_present")
+        if events.get("translation_revision_mismatch_violations") != 0:
+            failures.append("translation_revision_mismatch_present")
+        if events.get("duplicate_translation_update_violations") != 0:
+            failures.append("duplicate_translation_update_present")
+        if events.get("empty_translation_update_violations") != 0:
+            failures.append("empty_translation_update_present")
+        if events.get("post_stop_translation_update_violations") != 0:
+            failures.append("post_stop_translation_update_present")
         if events.get("malformed_event_count") != 0:
             failures.append("malformed_event_present")
         if result.get("critical_codes"):

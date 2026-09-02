@@ -67,6 +67,38 @@ test("backend transcript events are strictly validated and sanitized", () => {
   assert.equal("ignored" in event.segment, false);
 });
 
+test("asynchronous segment translations are strictly validated and sanitized", () => {
+  const event = validateBackendEvent({
+    type: "segment_translation",
+    session_id: "session-1",
+    segment_id: "segment-1",
+    segment_revision: 2,
+    translated_text: "Texto traduzido",
+    translated_language: "pt-BR",
+    ignored: "not relayed"
+  });
+  assert.deepEqual(event, {
+    type: "segment_translation",
+    session_id: "session-1",
+    segment_id: "segment-1",
+    segment_revision: 2,
+    translated_text: "Texto traduzido",
+    translated_language: "pt-BR"
+  });
+
+  for (const invalid of [
+    { segment_revision: -1 },
+    { translated_text: "" },
+    { translated_text: "   " },
+    { translated_text: "x".repeat(20_001) },
+    { translated_language: "pt" },
+    { session_id: "" },
+    { segment_id: "" }
+  ]) {
+    assert.throws(() => validateBackendEvent({ ...event, ...invalid }), ProtocolValidationError);
+  }
+});
+
 test("every model and translation progress phase is accepted and raw backend details are stripped", () => {
   const phases = [
     "checking_cache", "downloading", "verifying", "initializing", "preparing_speakers",
